@@ -432,7 +432,7 @@ async def stats_command(ctx: commands.Context):
         await ctx.send('❌ Không thể lấy thống kê. Vui lòng thử lại sau.')
 
 
-@bot.command(name='help')
+@bot.command(name='huongdan', aliases=['help', 'h'])
 async def help_command(ctx: commands.Context):
     """Hiển thị hướng dẫn sử dụng bot"""
     embed = discord.Embed(
@@ -455,7 +455,13 @@ async def help_command(ctx: commands.Context):
     )
     
     embed.add_field(
-        name='📖 !help',
+        name='� !stats',
+        value='Xem thống kê độ chính xác của bot.',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='�📖 !huongdan (hoặc !help, !h)',
         value='Hiển thị hướng dẫn này.',
         inline=False
     )
@@ -469,9 +475,9 @@ async def help_command(ctx: commands.Context):
 async def on_command_error(ctx: commands.Context, error: Exception):
     """Xử lý lỗi lệnh"""
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send('❌ Thiếu tham số. Sử dụng `!help` để xem hướng dẫn.')
+        await ctx.send('❌ Thiếu tham số. Sử dụng `!huongdan` để xem hướng dẫn.')
     elif isinstance(error, commands.CommandNotFound):
-        await ctx.send('❌ Lệnh không tồn tại. Sử dụng `!help` để xem danh sách lệnh.')
+        await ctx.send('❌ Lệnh không tồn tại. Sử dụng `!huongdan` để xem danh sách lệnh.')
     else:
         logger.error(f'Lỗi không xử lý được: {error}', exc_info=True)
         await ctx.send('❌ Đã xảy ra lỗi khi thực hiện lệnh.')
