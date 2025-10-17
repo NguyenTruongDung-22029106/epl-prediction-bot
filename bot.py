@@ -429,7 +429,7 @@ async def stats_command(ctx: commands.Context):
         
     except Exception as e:
         logger.error(f'Error getting stats: {e}', exc_info=True)
-        await ctx.send('        await ctx.send('❌ Không thể lấy thống kê. Vui lòng thử lại sau.')
+        await ctx.send('❌ Không thể lấy thống kê. Vui lòng thử lại sau.')
 
 
 @bot.command(name='huongdan', aliases=['hd'])
