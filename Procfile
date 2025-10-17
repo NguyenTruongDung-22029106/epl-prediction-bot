@@ -1,1 +1,1 @@
-web: python lol_bot.py
+worker: python bot.py
