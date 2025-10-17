@@ -24,6 +24,7 @@ import requests
 # Import các module tự tạo
 from predictor import predict_match
 from data_collector import get_team_stats, get_odds_data
+from prediction_tracker import log_prediction, get_stats
 
 # Load environment variables
 load_dotenv()
@@ -235,6 +236,20 @@ async def analyze(ctx: commands.Context, *, match_input: str):
         # Bước 3: Dự đoán bằng model
         prediction_result = predict_match(home_stats, away_stats, odds_data)
         
+        # Log prediction for tracking
+        if prediction_result and odds_data:
+            try:
+                log_prediction(
+                    home_team=home_team,
+                    away_team=away_team,
+                    prediction=prediction_result['prediction'],
+                    confidence=prediction_result['confidence'],
+                    handicap_value=odds_data.get('handicap_value', 0),
+                    odds_data=odds_data
+                )
+            except Exception as e:
+                logger.warning(f'Could not log prediction: {e}')
+        
         if not prediction_result:
             await loading_msg.edit(embed=discord.Embed(
                 title='❌ Lỗi',
@@ -306,6 +321,115 @@ async def analyze(ctx: commands.Context, *, match_input: str):
             description=f'Đã xảy ra lỗi khi phân tích: {str(e)}',
             color=discord.Color.red()
         ))
+
+
+@bot.command(name='help')
+async def help_command(ctx: commands.Context):
+    """Hiển thị hướng dẫn sử dụng bot"""
+    embed = discord.Embed(
+        title='📖 Hướng Dẫn Sử Dụng Bot',
+        description='**Nhà Tiên tri Ngoại Hạng Anh** ⚽️🤖',
+        color=discord.Color.purple()
+    )
+    
+    embed.add_field(
+        name='📅 !lichdau',
+        value='Hiển thị lịch thi đấu Ngoại Hạng Anh trong 7 ngày tới.',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🔮 !phantich <Đội A> vs <Đội B>',
+        value='Phân tích trận đấu và đưa ra khuyến nghị về kèo chấp Châu Á.\n'
+              'Ví dụ: `!phantich Arsenal vs Manchester United`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='📊 !stats',
+        value='Xem độ chính xác dự đoán của bot (prediction accuracy).',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='📖 !help',
+        value='Hiển thị hướng dẫn này.',
+        inline=False
+    )
+    
+    embed.set_footer(text='Bot được phát triển bằng Machine Learning dựa trên dữ liệu lịch sử.')
+    
+    await ctx.send(embed=embed)
+
+
+@bot.command(name='stats')
+async def stats_command(ctx: commands.Context):
+    """Hiển thị prediction accuracy statistics"""
+    await ctx.typing()
+    
+    try:
+        stats = get_stats()
+        
+        if not stats:
+            await ctx.send('📊 Chưa có dữ liệu prediction nào được lưu.')
+            return
+        
+        embed = discord.Embed(
+            title='📊 Thống Kê Độ Chính Xác',
+            description='Độ chính xác dự đoán của bot',
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(
+            name='Tổng số dự đoán',
+            value=str(stats['total_predictions']),
+            inline=True
+        )
+        
+        embed.add_field(
+            name='Đã có kết quả',
+            value=str(stats['completed_predictions']),
+            inline=True
+        )
+        
+        if stats['completed_predictions'] > 0:
+            accuracy = stats['accuracy']
+            correct = stats['correct_predictions']
+            
+            # Choose color based on accuracy
+            if accuracy >= 0.75:
+                accuracy_icon = '🟢'
+            elif accuracy >= 0.65:
+                accuracy_icon = '🟡'
+            else:
+                accuracy_icon = '🟠'
+            
+            embed.add_field(
+                name=f'{accuracy_icon} Độ chính xác',
+                value=f"**{accuracy:.1%}** ({correct}/{stats['completed_predictions']})",
+                inline=True
+            )
+            
+            # Recent predictions
+            if 'recent_10' in stats and stats['recent_10']:
+                recent_text = []
+                for p in stats['recent_10'][-5:]:  # Last 5
+                    icon = '✅' if p['correct'] else '❌'
+                    recent_text.append(f"{icon} {p['home_team']} vs {p['away_team']}")
+                
+                embed.add_field(
+                    name='5 dự đoán gần nhất',
+                    value='\n'.join(recent_text),
+                    inline=False
+                )
+        
+        embed.set_footer(text='Thống kê được cập nhật tự động sau mỗi trận đấu')
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f'Error getting stats: {e}', exc_info=True)
+        await ctx.send('❌ Không thể lấy thống kê. Vui lòng thử lại sau.')
 
 
 @bot.command(name='help')

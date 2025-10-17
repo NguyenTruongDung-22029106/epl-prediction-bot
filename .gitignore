@@ -13,11 +13,18 @@ ENV/
 
 # Data files
 *.csv
-*.pkl
-historical_stats.csv
-historical_odds.csv
-master_dataset.csv
-epl_prediction_model.pkl
+# Allow specific CSV files for model training
+!historical_odds.csv
+!master_dataset.csv
+
+# Model files - Allow for deployment
+!*.pkl
+!epl_prediction_model.pkl
+!scaler.pkl
+
+# Prediction logs
+predictions_log.json
+prediction_stats.csv
 
 # IDE
 .vscode/
