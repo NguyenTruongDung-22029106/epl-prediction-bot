@@ -429,7 +429,42 @@ async def stats_command(ctx: commands.Context):
         
     except Exception as e:
         logger.error(f'Error getting stats: {e}', exc_info=True)
-        await ctx.send('❌ Không thể lấy thống kê. Vui lòng thử lại sau.')
+        await ctx.send('        await ctx.send('❌ Không thể lấy thống kê. Vui lòng thử lại sau.')
+
+
+@bot.command(name='huongdan', aliases=['hd'])
+async def help_command(ctx: commands.Context):
+    """Hiển thị hướng dẫn sử dụng bot"""
+    embed = discord.Embed(
+        title='📖 Hướng Dẫn Sử Dụng Bot',
+        description='**Nhà Tiên tri Ngoại Hạng Anh** ⚽️🤖',
+        color=discord.Color.purple()
+    )
+    
+    embed.add_field(
+        name='📅 !lichdau',
+        value='Hiển thị lịch thi đấu Ngoại Hạng Anh trong 7 ngày tới.',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🔮 !phantich <Đội A> vs <Đội B>',
+        value='Phân tích trận đấu và đưa ra khuyến nghị về kèo chấp Châu Á.\n'
+              'Ví dụ: `!phantich Arsenal vs Manchester United`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='📊 !stats',
+        value='Xem thống kê độ chính xác của bot.',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='📖 !huongdan (hoặc !hd)',
+        value='Hiển thị hướng dẫn này.',
+        inline=False
+    )')
 
 
 @bot.command(name='huongdan', aliases=['help', 'h'])
