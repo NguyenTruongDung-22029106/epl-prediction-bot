@@ -50,21 +50,24 @@ def prepare_features(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
     
     Features phải giống hệt với những gì được dùng khi training model
     
+    NOTE: Không bao gồm FTHG, FTAG, FTR vì đây là target/result columns được loại bỏ trong training
+    
     Args:
         home_stats: Thống kê đội nhà
         away_stats: Thống kê đội khách
         odds_data: Dữ liệu kèo (optional)
     
     Returns:
-        DataFrame chứa một dòng với tất cả 105 features
+        DataFrame chứa một dòng với đúng 105 features
     """
     import random
     
     features = {}
     
     # === MATCH BASIC INFO (simulated) ===
-    features['FTHG'] = home_stats.get('goals_scored_avg', 1.5)  # Predicted home goals
-    features['FTAG'] = away_stats.get('goals_scored_avg', 1.2)  # Predicted away goals
+    # NOTE: KHÔNG BAO GỒM FTHG, FTAG vì model training loại bỏ chúng
+    # features['FTHG'] = home_stats.get('goals_scored_avg', 1.5)  # REMOVED - not in training features
+    # features['FTAG'] = away_stats.get('goals_scored_avg', 1.2)  # REMOVED - not in training features
     features['HTHG'] = home_stats.get('goals_scored_avg', 1.5) * 0.45  # Half-time estimate
     features['HTAG'] = away_stats.get('goals_scored_avg', 1.2) * 0.45
     
