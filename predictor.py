@@ -46,7 +46,7 @@ def load_model():
 def prepare_features(home_stats: Dict[str, Any], away_stats: Dict[str, Any], 
                      odds_data: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     """
-    Chuẩn bị features từ dữ liệu thống kê và kèo
+    Chuẩn bị features từ dữ liệu thống kê và kèo - PHẢI KHỚP VỚI 105 FEATURES TRONG TRAINING DATA
     
     Features phải giống hệt với những gì được dùng khi training model
     
@@ -56,38 +56,151 @@ def prepare_features(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
         odds_data: Dữ liệu kèo (optional)
     
     Returns:
-        DataFrame chứa một dòng với tất cả features
+        DataFrame chứa một dòng với tất cả 105 features
     """
+    import random
+    
     features = {}
     
-    # Feature từ đội nhà
-    features['home_goals_scored_avg'] = home_stats.get('goals_scored_avg', 0)
-    features['home_goals_conceded_avg'] = home_stats.get('goals_conceded_avg', 0)
-    features['home_goals_avg'] = home_stats.get('home_goals_avg', 0)
-    features['home_shots_per_game'] = home_stats.get('shots_per_game', 0)
-    features['home_possession_avg'] = home_stats.get('possession_avg', 0)
-    features['home_points_last_5'] = home_stats.get('points_last_5', 0)
+    # === MATCH BASIC INFO (simulated) ===
+    features['FTHG'] = home_stats.get('goals_scored_avg', 1.5)  # Predicted home goals
+    features['FTAG'] = away_stats.get('goals_scored_avg', 1.2)  # Predicted away goals
+    features['HTHG'] = home_stats.get('goals_scored_avg', 1.5) * 0.45  # Half-time estimate
+    features['HTAG'] = away_stats.get('goals_scored_avg', 1.2) * 0.45
     
-    # Feature từ đội khách
-    features['away_goals_scored_avg'] = away_stats.get('goals_scored_avg', 0)
-    features['away_goals_conceded_avg'] = away_stats.get('goals_conceded_avg', 0)
-    features['away_goals_avg'] = away_stats.get('away_goals_avg', 0)
-    features['away_shots_per_game'] = away_stats.get('shots_per_game', 0)
-    features['away_possession_avg'] = away_stats.get('possession_avg', 0)
-    features['away_points_last_5'] = away_stats.get('points_last_5', 0)
+    # === SHOTS STATISTICS ===
+    features['HS'] = home_stats.get('shots_per_game', 13)  # Home shots
+    features['AS'] = away_stats.get('shots_against_per_game', 11)  # Away shots
+    features['HST'] = home_stats.get('shots_on_target_per_game', 5)  # Home shots on target
+    features['AST'] = away_stats.get('shots_on_target_against', 4)  # Away shots on target
     
-    # Feature từ kèo (nếu có)
-    if odds_data:
-        features['handicap_value'] = odds_data.get('handicap_value', 0)
-        features['home_odds'] = odds_data.get('home_odds', 2.0)
-        features['away_odds'] = odds_data.get('away_odds', 2.0)
-    else:
-        features['handicap_value'] = 0
-        features['home_odds'] = 2.0
-        features['away_odds'] = 2.0
+    # === FOULS & CARDS ===
+    features['HF'] = home_stats.get('fouls_per_game', 11)  # Home fouls
+    features['AF'] = away_stats.get('fouls_per_game', 11)  # Away fouls
+    features['HY'] = home_stats.get('yellow_cards_avg', 2)  # Home yellow cards
+    features['AY'] = away_stats.get('yellow_cards_avg', 2)  # Away yellow cards
+    features['HR'] = home_stats.get('red_cards_avg', 0.08)  # Home red cards
+    features['AR'] = away_stats.get('red_cards_avg', 0.08)  # Away red cards
+    
+    # === CORNERS ===
+    features['HC'] = home_stats.get('corners_per_game', 5)  # Home corners
+    features['AC'] = away_stats.get('corners_against_per_game', 5)  # Away corners
+    
+    # === BETTING ODDS - 1X2 (Multiple bookmakers) ===
+    # Default odds based on team strength
+    home_strength = home_stats.get('goals_scored_avg', 1.5) / (home_stats.get('goals_conceded_avg', 1.0) + 0.5)
+    away_strength = away_stats.get('goals_scored_avg', 1.2) / (away_stats.get('goals_conceded_avg', 1.2) + 0.5)
+    
+    total_strength = home_strength + away_strength
+    implied_home_win = home_strength / total_strength * 0.55 + 0.25  # Home advantage
+    implied_away_win = away_strength / total_strength * 0.45 + 0.15
+    implied_draw = 1 - implied_home_win - implied_away_win
+    
+    # Convert to odds (with margin)
+    margin = 1.05
+    home_odd = (1 / implied_home_win) * margin if implied_home_win > 0 else 3.0
+    draw_odd = (1 / implied_draw) * margin if implied_draw > 0 else 3.3
+    away_odd = (1 / implied_away_win) * margin if implied_away_win > 0 else 3.5
+    
+    # Bet365 odds
+    features['B365H'] = home_odd
+    features['B365D'] = draw_odd
+    features['B365A'] = away_odd
+    
+    # Other bookmakers (slight variations)
+    for prefix in ['BW', 'IW', 'PS', 'WH', 'VC']:
+        features[f'{prefix}H'] = home_odd * (0.95 + random.random() * 0.1)
+        features[f'{prefix}D'] = draw_odd * (0.95 + random.random() * 0.1)
+        features[f'{prefix}A'] = away_odd * (0.95 + random.random() * 0.1)
+    
+    # Max/Avg odds
+    features['MaxH'] = home_odd * 1.05
+    features['MaxD'] = draw_odd * 1.05
+    features['MaxA'] = away_odd * 1.05
+    features['AvgH'] = home_odd
+    features['AvgD'] = draw_odd
+    features['AvgA'] = away_odd
+    
+    # === OVER/UNDER 2.5 GOALS ===
+    total_goals_avg = home_stats.get('goals_scored_avg', 1.5) + away_stats.get('goals_scored_avg', 1.2)
+    over_prob = min(0.8, max(0.2, (total_goals_avg - 1.5) / 2.0))
+    under_prob = 1 - over_prob
+    
+    over_odd = (1 / over_prob) * 1.05 if over_prob > 0 else 2.0
+    under_odd = (1 / under_prob) * 1.05 if under_prob > 0 else 2.0
+    
+    features['B365>2.5'] = over_odd
+    features['B365<2.5'] = under_odd
+    features['P>2.5'] = over_odd * 0.98
+    features['P<2.5'] = under_odd * 0.98
+    features['Max>2.5'] = over_odd * 1.03
+    features['Max<2.5'] = under_odd * 1.03
+    features['Avg>2.5'] = over_odd
+    features['Avg<2.5'] = under_odd
+    
+    # === ASIAN HANDICAP ===
+    goal_diff = home_stats.get('goals_scored_avg', 1.5) - away_stats.get('goals_scored_avg', 1.2)
+    handicap = round(goal_diff * 2) / 2  # Round to nearest 0.5
+    
+    features['AHh'] = handicap if odds_data is None else odds_data.get('handicap_value', handicap)
+    features['B365AHH'] = 1.95  # Home team with handicap
+    features['B365AHA'] = 1.95  # Away team with handicap
+    features['PAHH'] = 1.93
+    features['PAHA'] = 1.97
+    features['MaxAHH'] = 2.00
+    features['MaxAHA'] = 2.00
+    features['AvgAHH'] = 1.95
+    features['AvgAHA'] = 1.95
+    
+    # === CLOSING ODDS (similar to opening) ===
+    for prefix in ['B365C', 'BWC', 'IWC', 'PSC', 'WHC', 'VCC']:
+        features[f'{prefix}H'] = home_odd * (0.97 + random.random() * 0.06)
+        features[f'{prefix}D'] = draw_odd * (0.97 + random.random() * 0.06)
+        features[f'{prefix}A'] = away_odd * (0.97 + random.random() * 0.06)
+    
+    features['MaxCH'] = home_odd * 1.04
+    features['MaxCD'] = draw_odd * 1.04
+    features['MaxCA'] = away_odd * 1.04
+    features['AvgCH'] = home_odd * 0.99
+    features['AvgCD'] = draw_odd * 0.99
+    features['AvgCA'] = away_odd * 0.99
+    
+    # === CLOSING OVER/UNDER ===
+    features['B365C>2.5'] = over_odd * 0.99
+    features['B365C<2.5'] = under_odd * 0.99
+    features['PC>2.5'] = over_odd * 0.98
+    features['PC<2.5'] = under_odd * 0.98
+    features['MaxC>2.5'] = over_odd * 1.02
+    features['MaxC<2.5'] = under_odd * 1.02
+    features['AvgC>2.5'] = over_odd * 0.99
+    features['AvgC<2.5'] = under_odd * 0.99
+    
+    # === CLOSING ASIAN HANDICAP ===
+    features['AHCh'] = features['AHh']
+    features['B365CAHH'] = 1.96
+    features['B365CAHA'] = 1.94
+    features['PCAHH'] = 1.94
+    features['PCAHA'] = 1.96
+    features['MaxCAHH'] = 2.01
+    features['MaxCAHA'] = 1.99
+    features['AvgCAHH'] = 1.96
+    features['AvgCAHA'] = 1.94
+    
+    # === FORM & HISTORICAL ===
+    features['home_form_last5'] = home_stats.get('home_form_last5', 9)
+    features['away_form_last5'] = away_stats.get('away_form_last5', 6)
+    features['home_goals_avg'] = home_stats.get('home_goals_avg', 1.8)
+    features['away_goals_avg'] = away_stats.get('away_goals_avg', 1.2)
+    features['home_goals_conceded_avg'] = home_stats.get('home_goals_conceded_avg', 1.0)
+    features['away_goals_conceded_avg'] = away_stats.get('away_goals_conceded_avg', 1.3)
+    features['h2h_home_wins'] = home_stats.get('h2h_home_wins', 2)
+    features['h2h_draws'] = home_stats.get('h2h_draws', 1)
+    features['h2h_away_wins'] = away_stats.get('h2h_away_wins', 2)
     
     # Tạo DataFrame
     df = pd.DataFrame([features])
+    
+    logger.info(f'Prepared {len(df.columns)} features for prediction')
     
     return df
 
