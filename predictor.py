@@ -229,6 +229,9 @@ def predict_match(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
     # Chuẩn bị features
     features_df = prepare_features(home_stats, away_stats, odds_data)
     
+    logger.info(f'DEBUG: Features prepared - shape: {features_df.shape}, columns: {len(features_df.columns)}')
+    logger.info(f'DEBUG: First 10 columns: {list(features_df.columns[:10])}')
+    
     try:
         # Dự đoán
         # prediction = 1 nghĩa là đội nhà thắng kèo, 0 nghĩa là đội khách thắng kèo
