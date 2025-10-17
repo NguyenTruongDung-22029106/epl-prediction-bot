@@ -495,6 +495,31 @@ def main():
     if not ODDS_API_KEY:
         logger.warning('ODDS_API_KEY chưa được thiết lập. Sẽ không thể lấy dữ liệu kèo cược.')
     
+    # Start HTTP server for Render port binding (in background thread)
+    from threading import Thread
+    from flask import Flask
+    
+    app = Flask(__name__)
+    
+    @app.route('/')
+    def health_check():
+        return {'status': 'Bot is running', 'bot_name': 'EPL Prediction Bot'}, 200
+    
+    @app.route('/health')
+    def health():
+        return {'status': 'healthy'}, 200
+    
+    def run_web():
+        port = int(os.environ.get('PORT', 10000))
+        logger.info(f'Starting HTTP server on port {port}')
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    
+    # Start web server in background thread
+    web_thread = Thread(target=run_web, daemon=True)
+    web_thread.start()
+    logger.info('HTTP server started in background')
+    
+    # Run Discord bot in main thread
     try:
         bot.run(DISCORD_TOKEN)
     except Exception as e:
