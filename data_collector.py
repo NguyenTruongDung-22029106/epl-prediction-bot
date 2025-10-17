@@ -71,19 +71,29 @@ def get_team_stats(team_name: str, api_key: str = None) -> Optional[Dict[str, An
     # 2. Lấy các trận đấu gần nhất
     # 3. Tính toán các thống kê: form, goals scored/conceded, etc.
     
-    # Mock data tạm thời
+    # Generate varied mock data based on team name (để có prediction khác nhau)
+    # Sử dụng hash của tên để tạo variation nhất quán
+    import hashlib
+    team_hash = int(hashlib.md5(team_name.encode()).hexdigest()[:8], 16)
+    
+    # Tạo variation dựa trên hash
+    variation = (team_hash % 100) / 100  # 0.00 - 0.99
+    
+    # Mock stats with variation
     mock_stats = {
         'team_name': team_name,
-        'recent_form': [1, 1, 0, 1, 0],  # W, W, D, W, D trong 5 trận gần nhất
-        'goals_scored_avg': 1.8,
-        'goals_conceded_avg': 1.2,
-        'home_goals_avg': 2.1 if 'home' in team_name.lower() else 1.5,
-        'away_goals_avg': 1.5 if 'away' in team_name.lower() else 1.1,
-        'shots_per_game': 13.5,
-        'shots_on_target_per_game': 5.2,
-        'possession_avg': 54.3,
-        'points_last_5': sum([1, 1, 0, 1, 0]) * 3 + [1, 1, 0, 1, 0].count(0),
+        'recent_form': [1 if (team_hash + i) % 3 != 0 else 0 for i in range(5)],  # Varied form
+        'goals_scored_avg': 1.2 + variation,  # 1.2 - 2.2
+        'goals_conceded_avg': 0.8 + (1 - variation) * 0.8,  # 0.8 - 1.6 (inversed)
+        'home_goals_avg': 1.5 + variation * 1.0,  # 1.5 - 2.5
+        'away_goals_avg': 1.0 + variation * 0.8,  # 1.0 - 1.8
+        'shots_per_game': 11 + variation * 6,  # 11 - 17
+        'shots_on_target_per_game': 4 + variation * 3,  # 4 - 7
+        'possession_avg': 48 + variation * 15,  # 48 - 63%
+        'points_last_5': int(6 + variation * 9),  # 6 - 15 points
     }
+    
+    logger.info(f'{team_name}: {mock_stats["goals_scored_avg"]:.2f} goals/game, {mock_stats["possession_avg"]:.1f}% possession')
     
     return mock_stats
 
