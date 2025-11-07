@@ -29,6 +29,12 @@ MATCH_FEATURES_PATH = 'match_features.pkl'
 GOALS_FEATURES_PATH = 'goals_features.pkl'
 GOALS_CALIBRATION_PATH = 'goals_calibration.pkl'
 
+# ================= Singleton cache =================
+_MODEL_SINGLETON = None
+_GOALS_MODEL_SINGLETON = None
+_SCALER_SINGLETON = None
+_GOALS_SCALER_SINGLETON = None
+
 
 def load_model():
     """
@@ -37,15 +43,17 @@ def load_model():
     Returns:
         Model object hoặc None nếu không tìm thấy
     """
+    global _MODEL_SINGLETON
+    if _MODEL_SINGLETON is not None:
+        return _MODEL_SINGLETON
     if not os.path.exists(MODEL_PATH):
         logger.warning(f'Model file không tồn tại: {MODEL_PATH}')
         return None
-    
     try:
         with open(MODEL_PATH, 'rb') as f:
-            model = pickle.load(f)
+            _MODEL_SINGLETON = pickle.load(f)
         logger.info(f'Đã load model từ {MODEL_PATH}')
-        return model
+        return _MODEL_SINGLETON
     except Exception as e:
         logger.error(f'Lỗi khi load model: {e}')
         return None
@@ -58,27 +66,38 @@ def load_goals_model():
     Returns:
         Model object hoặc None nếu không tìm thấy
     """
+    global _GOALS_MODEL_SINGLETON
+    if _GOALS_MODEL_SINGLETON is not None:
+        return _GOALS_MODEL_SINGLETON
     if not os.path.exists(GOALS_MODEL_PATH):
         logger.warning(f'Goals model file không tồn tại: {GOALS_MODEL_PATH}')
         return None
-    
     try:
         with open(GOALS_MODEL_PATH, 'rb') as f:
-            model = pickle.load(f)
+            _GOALS_MODEL_SINGLETON = pickle.load(f)
         logger.info(f'Đã load goals model từ {GOALS_MODEL_PATH}')
-        return model
+        return _GOALS_MODEL_SINGLETON
     except Exception as e:
         logger.error(f'Lỗi khi load goals model: {e}')
         return None
 
 
 def load_scaler(scaler_path):
-    """Load scaler nếu có (đúng logic, trước đây hàm luôn trả None)."""
+    """Load scaler với singleton cache để tránh load nhiều lần."""
+    global _SCALER_SINGLETON, _GOALS_SCALER_SINGLETON
+    if scaler_path == SCALER_PATH and _SCALER_SINGLETON is not None:
+        return _SCALER_SINGLETON
+    if scaler_path == GOALS_SCALER_PATH and _GOALS_SCALER_SINGLETON is not None:
+        return _GOALS_SCALER_SINGLETON
     if not os.path.exists(scaler_path):
         return None
     try:
         with open(scaler_path, 'rb') as f:
             scaler = pickle.load(f)
+        if scaler_path == SCALER_PATH:
+            _SCALER_SINGLETON = scaler
+        elif scaler_path == GOALS_SCALER_PATH:
+            _GOALS_SCALER_SINGLETON = scaler
         return scaler
     except Exception as e:
         logger.warning(f'Không thể load scaler {scaler_path}: {e}')
@@ -474,6 +493,7 @@ def predict_total_goals(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
         else:
             features_for_model = features_scaled
         raw_pred = float(goals_model.predict(features_for_model)[0])
+        logger.debug(f'RAW goals prediction (trước calibration): {raw_pred:.4f}')
 
         # --- Calibration towards league mean ---
         # Load calibration file if available to use dataset mean
@@ -493,13 +513,17 @@ def predict_total_goals(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
         # Lower alpha to reduce Over bias as requested
         alpha = 0.50  # weight on model prediction (balanced towards league mean)
         calibrated = alpha * raw_pred + (1 - alpha) * league_mean
+        logger.debug(f'Calibrated (alpha={alpha}, league_mean={league_mean:.3f}): {calibrated:.4f}')
         # Defensive dampening: if both teams concede relatively low, reduce a bit
         h_conc = home_stats.get('goals_conceded_avg', 1.2)
         a_conc = away_stats.get('goals_conceded_avg', 1.2)
         if h_conc < 1.2 and a_conc < 1.2:
             calibrated *= 0.92
         # Clamp to a plausible band
+        if calibrated < 1.5 or calibrated > 3.6:
+            logger.warning(f'Calibrated value {calibrated:.3f} vượt dải dự kiến trước clamp.')
         calibrated = max(1.5, min(3.6, calibrated))
+        logger.debug(f'Final predicted_goals sau clamp: {calibrated:.4f}')
         predicted_goals = calibrated
         # Cache theo cặp đội để tránh tính lại
         match_key = f"{home_stats.get('team_name','home')}__{away_stats.get('team_name','away')}".lower()
