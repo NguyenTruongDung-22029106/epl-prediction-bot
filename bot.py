@@ -38,7 +38,43 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # API Keys
-DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
+# Support multiple env var names for compatibility with different hosts (Render, local)
+def _get_raw_token() -> Optional[str]:
+    for key in ['DISCORD_TOKEN', 'DISCORD_BOT_TOKEN', 'BOT_TOKEN']:
+        val = os.getenv(key)
+        if val:
+            logger.info(f"Loaded Discord token from env: {key}")
+            return val
+    return None
+
+def _sanitize_token(token: Optional[str]) -> Optional[str]:
+    if not token:
+        return None
+    t = token.strip().strip('"').strip("'")
+    # Remove common prefixes that users accidentally include
+    for prefix in ['Bot ', 'Bearer ']:
+        if t.startswith(prefix):
+            t = t[len(prefix):]
+    return t
+
+def _mask_token(token: Optional[str]) -> str:
+    if not token:
+        return 'None'
+    if len(token) <= 10:
+        return '***'
+    return f"{token[:6]}...{token[-4:]}"
+
+def _looks_like_discord_token(token: Optional[str]) -> bool:
+    if not token:
+        return False
+    # Heuristic: Discord tokens are typically 3 segments separated by dots
+    parts = token.split('.')
+    if len(parts) != 3:
+        return False
+    # Basic length checks per segment
+    return all(len(p) >= 6 for p in parts) and len(token) >= 30
+
+DISCORD_TOKEN = _sanitize_token(_get_raw_token())
 FOOTBALL_DATA_API_KEY = os.getenv('FOOTBALL_DATA_API_KEY')
 ODDS_API_KEY = os.getenv('ODDS_API_KEY')
 
@@ -607,16 +643,6 @@ async def on_command_error(ctx: commands.Context, error: Exception):
 
 def main():
     """Khởi chạy bot"""
-    if not DISCORD_TOKEN:
-        logger.error('DISCORD_TOKEN chưa được thiết lập trong file .env')
-        return
-    
-    if not FOOTBALL_DATA_API_KEY:
-        logger.warning('FOOTBALL_DATA_API_KEY chưa được thiết lập. Một số tính năng sẽ không hoạt động.')
-    
-    if not ODDS_API_KEY:
-        logger.warning('ODDS_API_KEY chưa được thiết lập. Sẽ không thể lấy dữ liệu kèo cược.')
-    
     # Start HTTP server for Render port binding (in background thread)
     from threading import Thread
     from flask import Flask
@@ -631,6 +657,14 @@ def main():
     def health():
         return {'status': 'healthy'}, 200
     
+    @app.route('/token')
+    def token_status():
+        return {
+            'present': bool(DISCORD_TOKEN),
+            'looks_valid': _looks_like_discord_token(DISCORD_TOKEN),
+            'masked': _mask_token(DISCORD_TOKEN)
+        }, 200
+    
     def run_web():
         port = int(os.environ.get('PORT', 10000))
         logger.info(f'Starting HTTP server on port {port}')
@@ -641,8 +675,28 @@ def main():
     web_thread.start()
     logger.info('HTTP server started in background')
     
+    # Validate tokens after web server started so Render can still detect port
+    if not DISCORD_TOKEN:
+        logger.error('DISCORD_TOKEN không được thiết lập. Hãy set một trong các biến: DISCORD_TOKEN, DISCORD_BOT_TOKEN, hoặc BOT_TOKEN trong Render/ENV.')
+        # Keep process alive to allow health checks while waiting for env fix
+        web_thread.join()
+        return
+    
+    if not _looks_like_discord_token(DISCORD_TOKEN):
+        logger.error(f"Discord token có vẻ không hợp lệ: {_mask_token(DISCORD_TOKEN)}\n"
+                     f"Gợi ý: Dán đúng Bot Token từ Discord Developer Portal (không kèm tiền tố 'Bot ').")
+        web_thread.join()
+        return
+    
+    if not FOOTBALL_DATA_API_KEY:
+        logger.warning('FOOTBALL_DATA_API_KEY chưa được thiết lập. Một số tính năng sẽ không hoạt động.')
+    
+    if not ODDS_API_KEY:
+        logger.warning('ODDS_API_KEY chưa được thiết lập. Sẽ không thể lấy dữ liệu kèo cược.')
+    
     # Run Discord bot in main thread
     try:
+        logger.info(f"Đăng nhập Discord với token: {_mask_token(DISCORD_TOKEN)}")
         bot.run(DISCORD_TOKEN)
     except Exception as e:
         logger.error(f'Lỗi khi khởi chạy bot: {e}')
