@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: epl-prediction-bot
+    env: python
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /health
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: FOOTBALL_DATA_API_KEY
+        sync: false
+      - key: ODDS_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
