@@ -17,10 +17,10 @@ import pickle
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, mean_squared_error, mean_absolute_error, r2_score
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 DATASET_PATH = 'master_dataset.csv'
 MODEL_PATH = 'epl_prediction_model.pkl'
 SCALER_PATH = 'scaler.pkl'
+GOALS_MODEL_PATH = 'epl_goals_model.pkl'
+GOALS_SCALER_PATH = 'goals_scaler.pkl'
 
 
 def load_dataset() -> pd.DataFrame:
@@ -133,13 +135,13 @@ def train_models(X_train, X_test, y_train, y_test) -> Dict[str, Any]:
     # Định nghĩa các models
     models = {
         'Random Forest': RandomForestClassifier(
-            n_estimators=100,
+                n_estimators=50,
             max_depth=10,
             min_samples_split=5,
             random_state=42
         ),
         'Gradient Boosting': GradientBoostingClassifier(
-            n_estimators=100,
+                n_estimators=50,
             learning_rate=0.1,
             max_depth=5,
             random_state=42
@@ -218,6 +220,176 @@ def save_best_model(results: Dict[str, Any]) -> None:
         pickle.dump(best_model, f)
     
     logger.info(f'✅ Đã lưu model vào {MODEL_PATH}')
+    # Lưu danh sách features dùng cho model chính
+    try:
+        with open('match_features.pkl', 'wb') as f:
+            # best model was trained on X_train_scaled -> original columns preserved earlier in prepare_data
+            # We can reload dataset and re-run prepare_data quickly to capture columns
+            df = load_dataset()
+            if not df.empty:
+                X_tmp, _y_tmp = prepare_data(df)
+                pickle.dump(X_tmp.columns.tolist(), f)
+                logger.info(f'Đã lưu danh sách features (match) vào match_features.pkl')
+    except Exception as e:
+        logger.warning(f'Không thể lưu danh sách features match: {e}')
+
+
+def prepare_goals_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+    """
+    Chuẩn bị dữ liệu để dự đoán tổng số bàn thắng
+    
+    Args:
+        df: DataFrame chứa toàn bộ dữ liệu
+    
+    Returns:
+        Tuple (X, y) - Features và total goals
+    """
+    logger.info('Đang chuẩn bị dữ liệu cho dự đoán tổng bàn thắng...')
+    
+    # Target: Tổng số bàn thắng
+    if 'FTHG' not in df.columns or 'FTAG' not in df.columns:
+        logger.error('Không tìm thấy cột FTHG hoặc FTAG')
+        return pd.DataFrame(), pd.Series()
+    
+    df['TotalGoals'] = df['FTHG'] + df['FTAG']
+    
+    # Xác định features
+    exclude_columns = [
+        'TotalGoals', 'FTHG', 'FTAG', 'FTR', 'HTHG', 'HTAG', 'HTR',
+        'Date', 'HomeTeam', 'AwayTeam', 'Season', 'handicap_result'
+    ]
+    
+    feature_columns = [col for col in df.columns if col not in exclude_columns]
+    numeric_columns = df[feature_columns].select_dtypes(include=[np.number]).columns.tolist()
+    
+    X = df[numeric_columns].copy()
+    y = df['TotalGoals'].copy()
+    
+    # Xử lý missing values
+    X = X.fillna(X.mean())
+    
+    logger.info(f'Features: {len(X.columns)} cột')
+    logger.info(f'Số lượng samples: {len(X)}')
+    logger.info(f'Tổng bàn - Mean: {y.mean():.2f}, Median: {y.median():.2f}, Std: {y.std():.2f}')
+    
+    return X, y
+
+
+def train_goals_models(X_train, X_test, y_train, y_test) -> Dict[str, Any]:
+    """
+    Huấn luyện models để dự đoán tổng số bàn thắng
+    
+    Args:
+        X_train, X_test: Training và testing features
+        y_train, y_test: Training và testing total goals
+    
+    Returns:
+        Dictionary chứa thông tin về models và kết quả
+    """
+    logger.info('Đang huấn luyện models dự đoán tổng bàn thắng...')
+    
+    # Chuẩn hóa dữ liệu
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    # Lưu scaler
+    with open(GOALS_SCALER_PATH, 'wb') as f:
+        pickle.dump(scaler, f)
+    logger.info(f'Đã lưu goals scaler vào {GOALS_SCALER_PATH}')
+    
+    # Định nghĩa các models (regression)
+    models = {
+        'Random Forest': RandomForestRegressor(
+                n_estimators=50,
+            max_depth=10,
+            min_samples_split=5,
+            random_state=42
+        ),
+        'Gradient Boosting': GradientBoostingRegressor(
+                n_estimators=50,
+            learning_rate=0.1,
+            max_depth=5,
+            random_state=42
+        ),
+        'Linear Regression': LinearRegression()
+    }
+    
+    results = {}
+    
+    for name, model in models.items():
+        logger.info(f'\n{"="*50}')
+        logger.info(f'Đang huấn luyện: {name}')
+        logger.info(f'{"="*50}')
+        
+        # Training
+        model.fit(X_train_scaled, y_train)
+        
+        # Predictions
+        y_pred = model.predict(X_test_scaled)
+        
+        # Metrics
+        mse = mean_squared_error(y_test, y_pred)
+        rmse = np.sqrt(mse)
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        
+        results[name] = {
+            'model': model,
+            'mse': mse,
+            'rmse': rmse,
+            'mae': mae,
+            'r2': r2
+        }
+        
+        # Log results
+        logger.info(f'MSE: {mse:.4f}')
+        logger.info(f'RMSE: {rmse:.4f}')
+        logger.info(f'MAE: {mae:.4f}')
+        logger.info(f'R² Score: {r2:.4f}')
+        
+        # Sample predictions
+        logger.info('\nMẫu dự đoán (5 trận đầu):')
+        for i in range(min(5, len(y_test))):
+            logger.info(f'Thực tế: {y_test.iloc[i]:.1f}, Dự đoán: {y_pred[i]:.1f}')
+    
+    return results
+
+
+def save_best_goals_model(results: Dict[str, Any]) -> None:
+    """
+    Lưu model tốt nhất dự đoán tổng bàn (dựa trên MAE thấp nhất)
+    
+    Args:
+        results: Dictionary chứa kết quả của tất cả models
+    """
+    # Tìm model tốt nhất (MAE thấp nhất)
+    best_model_name = min(results, key=lambda x: results[x]['mae'])
+    best_model = results[best_model_name]['model']
+    best_mae = results[best_model_name]['mae']
+    best_r2 = results[best_model_name]['r2']
+    
+    logger.info(f'\n{"="*50}')
+    logger.info(f'Model dự đoán tổng bàn tốt nhất: {best_model_name}')
+    logger.info(f'MAE: {best_mae:.4f}')
+    logger.info(f'R² Score: {best_r2:.4f}')
+    logger.info(f'{"="*50}')
+    
+    # Lưu model
+    with open(GOALS_MODEL_PATH, 'wb') as f:
+        pickle.dump(best_model, f)
+    
+    logger.info(f'✅ Đã lưu goals model vào {GOALS_MODEL_PATH}')
+    # Lưu danh sách features dùng cho goals model
+    try:
+        df = load_dataset()
+        if not df.empty:
+            Xg_tmp, yg_tmp = prepare_goals_data(df)
+            with open('goals_features.pkl', 'wb') as f:
+                pickle.dump(Xg_tmp.columns.tolist(), f)
+            logger.info('Đã lưu danh sách features (goals) vào goals_features.pkl')
+    except Exception as e:
+        logger.warning(f'Không thể lưu danh sách features goals: {e}')
 
 
 def create_mock_dataset() -> pd.DataFrame:
@@ -312,8 +484,34 @@ def main():
     # Save best model
     save_best_model(results)
     
+    # === TRAIN MODEL DỰ ĐOÁN TỔNG BÀN THẮNG ===
+    logger.info('\n\n=== BẮT ĐẦU TRAINING MODEL DỰ ĐOÁN TỔNG BÀN THẮNG ===\n')
+    
+    # Prepare goals data
+    X_goals, y_goals = prepare_goals_data(df)
+    
+    if X_goals.empty or y_goals.empty:
+        logger.error('Không thể chuẩn bị dữ liệu cho tổng bàn thắng.')
+    else:
+        # Split data
+        X_train_g, X_test_g, y_train_g, y_test_g = train_test_split(
+            X_goals, y_goals, test_size=0.2, random_state=42
+        )
+        
+        logger.info(f'Phân chia dữ liệu tổng bàn:')
+        logger.info(f'Training set: {len(X_train_g)} samples')
+        logger.info(f'Testing set: {len(X_test_g)} samples\n')
+        
+        # Train goals models
+        goals_results = train_goals_models(X_train_g, X_test_g, y_train_g, y_test_g)
+        
+        # Save best goals model
+        save_best_goals_model(goals_results)
+    
     logger.info('\n=== KẾT THÚC TRAINING ===')
-    logger.info('Model đã sẵn sàng để sử dụng trong bot!')
+    logger.info('Cả 2 models đã sẵn sàng:')
+    logger.info(f'  ✅ Model dự đoán kết quả: {MODEL_PATH}')
+    logger.info(f'  ✅ Model dự đoán tổng bàn: {GOALS_MODEL_PATH}')
 
 
 if __name__ == '__main__':

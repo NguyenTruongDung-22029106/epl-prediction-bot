@@ -23,27 +23,42 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# API Keys
+# API Keys (Football-Data legacy + new API-Football / RapidAPI)
 FOOTBALL_DATA_API_KEY = os.getenv('FOOTBALL_DATA_API_KEY')
 ODDS_API_KEY = os.getenv('ODDS_API_KEY')
+RAPIDAPI_KEY = os.getenv('RAPIDAPI_KEY')  # API-Football key via RapidAPI
+API_FOOTBALL_HOST = os.getenv('API_FOOTBALL_HOST', 'api-football-v1.p.rapidapi.com')
+# Runtime switch to disable API-Football attempts after subscription/403 errors
+API_FOOTBALL_DISABLED = False
 
 # API Endpoints
 FOOTBALL_DATA_BASE_URL = 'https://api.football-data.org/v4'
 ODDS_API_BASE_URL = 'https://api.the-odds-api.com/v4'
+API_FOOTBALL_BASE_URL = 'https://api-football-v1.p.rapidapi.com/v3'
 
 PREMIER_LEAGUE_ID = 'PL'
 
 
-def get_football_data(endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
+def get_football_data(endpoint: str, params: Optional[Dict] = None, api_key: Optional[str] = None) -> Optional[Dict]:
     """
     Gọi API của Football-Data.org
     """
-    headers = {'X-Auth-Token': FOOTBALL_DATA_API_KEY}
+    key = api_key or FOOTBALL_DATA_API_KEY
+    headers = {'X-Auth-Token': key} if key else {}
     url = f"{FOOTBALL_DATA_BASE_URL}{endpoint}"
     
     try:
         response = requests.get(url, headers=headers, params=params, timeout=10)
-        response.raise_for_status()
+        if response.status_code != 200:
+            # Log chi tiết để chẩn đoán
+            try:
+                detail = response.json()
+            except Exception:
+                detail = response.text[:300]
+            logger.error(
+                f"Football-Data API lỗi {response.status_code} tại {url} | params={params} | detail={detail}"
+            )
+            return None
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Lỗi khi gọi Football-Data API: {e}")
@@ -63,32 +78,34 @@ def get_team_stats(team_name: str, api_key: str = None) -> Optional[Dict[str, An
     """
     logger.info(f'Đang lấy thống kê cho đội: {team_name}')
     
-    # Bước 1: Tìm team ID từ tên
+    # Nếu có RapidAPI key và chưa disable, ưu tiên API-Football
+    if RAPIDAPI_KEY and not API_FOOTBALL_DISABLED:
+        rapid_stats = _get_team_stats_api_football(team_name)
+        if rapid_stats:
+            return rapid_stats
+        logger.warning('API-Football trả về None, thử Football-Data fallback...')
+
+    # Fallback Football-Data.org (nếu key còn dùng được)
     team_id = _find_team_id(team_name)
     if not team_id:
-        logger.warning(f'Không tìm thấy team ID cho {team_name}, dùng mock data')
+        logger.warning(f'Không tìm thấy team ID (Football-Data) cho {team_name}, dùng mock data')
         return _generate_mock_stats(team_name)
-    
-    # Bước 2: Lấy thông tin team và matches gần nhất
-    team_data = get_football_data(f'/teams/{team_id}')
+
+    team_data = get_football_data(f'/teams/{team_id}', api_key=api_key)
     if not team_data:
-        logger.warning(f'Không lấy được dữ liệu team, dùng mock data')
+        logger.warning(f'Không lấy được dữ liệu team (Football-Data), dùng mock data')
         return _generate_mock_stats(team_name)
-    
-    # Bước 3: Lấy matches của team (10 trận gần nhất)
+
     matches_data = get_football_data(
         f'/teams/{team_id}/matches',
-        params={'status': 'FINISHED', 'limit': 10}
+        params={'status': 'FINISHED', 'limit': 10},
+        api_key=api_key
     )
-    
     if not matches_data or 'matches' not in matches_data:
-        logger.warning(f'Không lấy được matches, dùng mock data')
+        logger.warning(f'Không lấy được matches (Football-Data), dùng mock data')
         return _generate_mock_stats(team_name)
-    
-    # Bước 4: Tính toán statistics từ matches
-    stats = _calculate_team_statistics(team_name, team_id, matches_data['matches'])
-    
-    return stats
+
+    return _calculate_team_statistics(team_name, team_id, matches_data['matches'])
 
 
 def _generate_mock_stats(team_name: str) -> Dict[str, Any]:
@@ -317,17 +334,159 @@ def _calculate_team_statistics(team_name: str, team_id: int, matches: List[Dict]
     return stats
 
 
-def _generate_mock_stats(team_name: str) -> Dict[str, Any]:
-    """Fallback: Generate mock stats when API fails"""
-    import hashlib
-    import random
-    
-    return mock_stats
+def _api_football_request(endpoint: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    global API_FOOTBALL_DISABLED
+    if not RAPIDAPI_KEY or API_FOOTBALL_DISABLED:
+        return None
+    url = f"{API_FOOTBALL_BASE_URL}{endpoint}"
+    headers = {
+        'x-rapidapi-key': RAPIDAPI_KEY,
+        'x-rapidapi-host': API_FOOTBALL_HOST,
+    }
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=12)
+        if r.status_code != 200:
+            body = r.text[:300]
+            logger.error(f'API-Football lỗi {r.status_code} tại {url} params={params} body={body}')
+            # Nếu là lỗi do chưa subscribe hoặc 403 -> vô hiệu hoá các lần gọi tiếp theo trong runtime
+            if r.status_code == 403 or ('not subscribed' in body.lower()):
+                if not API_FOOTBALL_DISABLED:
+                    logger.warning('Vô hiệu hoá API-Football trong phiên hiện tại do lỗi subscription/403.')
+                API_FOOTBALL_DISABLED = True
+            return None
+        data = r.json()
+        if not data or 'response' not in data:
+            return None
+        return data
+    except Exception as e:
+        logger.error(f'API-Football exception: {e}')
+        return None
+
+
+def _get_team_id_api_football(team_name: str) -> Optional[int]:
+    data = _api_football_request('/teams', {'search': team_name})
+    if not data:
+        return None
+    resp = data.get('response', [])
+    if not resp:
+        return None
+    # pick first exact-ish match
+    for item in resp:
+        n = (item.get('team', {}) or {}).get('name', '').lower()
+        if team_name.lower() in n:
+            return item.get('team', {}).get('id')
+    # fallback first
+    return resp[0].get('team', {}).get('id') if resp else None
+
+
+def _get_team_stats_api_football(team_name: str) -> Optional[Dict[str, Any]]:
+    team_id = _get_team_id_api_football(team_name)
+    if not team_id:
+        return None
+    # last 10 fixtures finished current season (season guess: current year or year-1 depending on month)
+    season_year = datetime.now().year if datetime.now().month >= 7 else datetime.now().year - 1
+    fixtures = _api_football_request('/fixtures', {
+        'team': team_id,
+        'season': season_year,
+        'last': 10
+    })
+    if not fixtures:
+        return None
+    matches = fixtures.get('response', [])
+    if not matches:
+        return None
+
+    total_scored = 0
+    total_conceded = 0
+    recent_form = []
+    points_last_5 = 0
+    home_goals = home_conceded = home_matches = 0
+    away_goals = away_conceded = away_matches = 0
+
+    for m in matches:
+        teams = m.get('teams', {})
+        score = m.get('score', {}).get('fulltime', {})
+        home_score = score.get('home', 0) or 0
+        away_score = score.get('away', 0) or 0
+        is_home = teams.get('home', {}).get('id') == team_id
+        # accumulate
+        if is_home:
+            home_matches += 1
+            home_goals += home_score
+            home_conceded += away_score
+            total_scored += home_score
+            total_conceded += away_score
+            if home_score > away_score:
+                recent_form.append(1); points_last_5 += 3 if len(recent_form) <= 5 else 0
+            elif home_score == away_score:
+                recent_form.append(0); points_last_5 += 1 if len(recent_form) <= 5 else 0
+            else:
+                recent_form.append(0)
+        else:
+            away_matches += 1
+            away_goals += away_score
+            away_conceded += home_score
+            total_scored += away_score
+            total_conceded += home_score
+            if away_score > home_score:
+                recent_form.append(1); points_last_5 += 3 if len(recent_form) <= 5 else 0
+            elif away_score == home_score:
+                recent_form.append(0); points_last_5 += 1 if len(recent_form) <= 5 else 0
+            else:
+                recent_form.append(0)
+
+    n = len(matches)
+    if n == 0:
+        return None
+    goals_scored_avg = total_scored / n
+    goals_conceded_avg = total_conceded / n
+    home_goals_avg = home_goals / home_matches if home_matches else goals_scored_avg
+    away_goals_avg = away_goals / away_matches if away_matches else goals_scored_avg
+    home_conceded_avg = home_conceded / home_matches if home_matches else goals_conceded_avg
+    away_conceded_avg = away_conceded / away_matches if away_matches else goals_conceded_avg
+
+    stats = {
+        'team_name': team_name,
+        'recent_form': recent_form[:5],
+        'goals_scored_avg': goals_scored_avg,
+        'goals_conceded_avg': goals_conceded_avg,
+        'home_goals_avg': home_goals_avg,
+        'away_goals_avg': away_goals_avg,
+        'home_goals_conceded_avg': home_conceded_avg,
+        'away_goals_conceded_avg': away_conceded_avg,
+        # Derived approximations (API-Football provides additional stats in /fixtures? We keep simple for now)
+        'shots_per_game': 12 + goals_scored_avg * 2,
+        'shots_on_target_per_game': 4 + goals_scored_avg,
+        'shots_against_per_game': 12 + goals_conceded_avg * 2,
+        'shots_on_target_against': 4 + goals_conceded_avg,
+        'possession_avg': 50,
+        'fouls_per_game': 11,
+        'yellow_cards_avg': 2,
+        'red_cards_avg': 0.1,
+        'corners_per_game': 5,
+        'corners_against_per_game': 5,
+        'points_last_5': points_last_5,
+        'home_form_last5': points_last_5,
+        'away_form_last5': points_last_5,
+        'h2h_home_wins': 0,
+        'h2h_draws': 0,
+        'h2h_away_wins': 0,
+        'provider': 'API_FOOTBALL'
+    }
+    logger.info(f"{team_name}: [API_FOOTBALL] Goals={goals_scored_avg:.2f}/game Conceded={goals_conceded_avg:.2f} Points(L5)={points_last_5}")
+    return stats
+
+
+
+
+# Simple in-memory cache for odds (3 hours TTL)
+_odds_cache = {}
+_ODDS_CACHE_TTL = 3 * 3600  # 3 hours in seconds
 
 
 def get_odds_data(home_team: str, away_team: str, api_key: str = None) -> Optional[Dict[str, Any]]:
     """
-    Lấy dữ liệu kèo cược từ The Odds API
+    Lấy dữ liệu kèo cược từ The Odds API với caching 3 giờ
     
     Args:
         home_team: Tên đội nhà
@@ -339,22 +498,96 @@ def get_odds_data(home_team: str, away_team: str, api_key: str = None) -> Option
     """
     logger.info(f'Đang lấy kèo cho trận: {home_team} vs {away_team}')
     
-    # TODO: Implement API call để lấy kèo thực
-    # Lưu ý: The Odds API chỉ có 500 requests/tháng miễn phí
-    # Cần implement caching để tránh vượt quá giới hạn
+    # Check cache first
+    cache_key = f"{home_team}_vs_{away_team}".lower().replace(' ', '_')
+    now = time.time()
+    if cache_key in _odds_cache:
+        cached_data, cached_time = _odds_cache[cache_key]
+        if now - cached_time < _ODDS_CACHE_TTL:
+            logger.info(f'Sử dụng odds từ cache (còn {int((_ODDS_CACHE_TTL - (now - cached_time))/60)} phút)')
+            return cached_data
     
-    # Mock data tạm thời
+    # Try real API if key is present
+    key = api_key or ODDS_API_KEY
+    if key:
+        try:
+            real_odds = _fetch_real_odds(home_team, away_team, key)
+            if real_odds:
+                _odds_cache[cache_key] = (real_odds, now)
+                return real_odds
+        except Exception as e:
+            logger.warning(f'Lỗi khi lấy odds từ API: {e}')
+    
+    # Fallback to mock
+    logger.info('Sử dụng mock odds (API key không có hoặc lỗi)')
     mock_odds = {
         'home_team': home_team,
         'away_team': away_team,
-        'asian_handicap': f'{home_team} -0.5',  # Đội nhà chấp 0.5 bàn
+        'asian_handicap': f'{home_team} -0.5',
         'handicap_value': -0.5,
         'home_odds': 1.95,
         'away_odds': 1.95,
-        'timestamp': datetime.now().isoformat()
+        'timestamp': datetime.now().isoformat(),
+        'source': 'mock'
+    }
+    return mock_odds
+
+
+def _fetch_real_odds(home_team: str, away_team: str, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    Gọi The Odds API để lấy odds thật
+    Endpoint: /v4/sports/soccer_epl/odds?regions=uk&markets=h2h,spreads
+    """
+    url = f"{ODDS_API_BASE_URL}/sports/soccer_epl/odds"
+    params = {
+        'apiKey': api_key,
+        'regions': 'uk',
+        'markets': 'spreads',  # Asian handicap
+        'oddsFormat': 'decimal'
     }
     
-    return mock_odds
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code != 200:
+            logger.error(f'The Odds API returned {response.status_code}: {response.text[:200]}')
+            return None
+        
+        data = response.json()
+        
+        # Find matching fixture
+        for event in data:
+            h = event.get('home_team', '').lower()
+            a = event.get('away_team', '').lower()
+            if (home_team.lower() in h or h in home_team.lower()) and \
+               (away_team.lower() in a or a in away_team.lower()):
+                # Extract spreads (Asian handicap)
+                bookmakers = event.get('bookmakers', [])
+                if bookmakers:
+                    spreads_market = next((m for m in bookmakers[0].get('markets', []) if m['key'] == 'spreads'), None)
+                    if spreads_market:
+                        outcomes = spreads_market.get('outcomes', [])
+                        home_outcome = next((o for o in outcomes if o['name'] == event['home_team']), None)
+                        away_outcome = next((o for o in outcomes if o['name'] == event['away_team']), None)
+                        
+                        if home_outcome and away_outcome:
+                            handicap = home_outcome.get('point', 0)
+                            return {
+                                'home_team': event['home_team'],
+                                'away_team': event['away_team'],
+                                'asian_handicap': f"{event['home_team']} {handicap:+.1f}",
+                                'handicap_value': float(handicap),
+                                'home_odds': float(home_outcome.get('price', 1.95)),
+                                'away_odds': float(away_outcome.get('price', 1.95)),
+                                'timestamp': event.get('commence_time', datetime.now().isoformat()),
+                                'source': 'the_odds_api'
+                            }
+        
+        logger.warning(f'Không tìm thấy odds cho {home_team} vs {away_team}')
+        return None
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f'Lỗi khi gọi The Odds API: {e}')
+        return None
 
 
 def collect_historical_stats(seasons: List[str] = None) -> pd.DataFrame:

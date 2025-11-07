@@ -14,12 +14,18 @@ import pickle
 
 import pandas as pd
 import numpy as np
+from poisson_model import load_or_fit_strengths, expected_goals as pois_expected_goals, score_matrix, top_scorelines as pois_top_scorelines, ou_probabilities as pois_ou_probabilities
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Đường dẫn đến model file
 MODEL_PATH = 'epl_prediction_model.pkl'
+SCALER_PATH = 'scaler.pkl'
+GOALS_MODEL_PATH = 'epl_goals_model.pkl'
+GOALS_SCALER_PATH = 'goals_scaler.pkl'
+MATCH_FEATURES_PATH = 'match_features.pkl'
+GOALS_FEATURES_PATH = 'goals_features.pkl'
 
 
 def load_model():
@@ -40,6 +46,56 @@ def load_model():
         return model
     except Exception as e:
         logger.error(f'Lỗi khi load model: {e}')
+        return None
+
+
+def load_goals_model():
+    """
+    Load model dự đoán tổng số bàn thắng
+    
+    Returns:
+        Model object hoặc None nếu không tìm thấy
+    """
+    if not os.path.exists(GOALS_MODEL_PATH):
+        logger.warning(f'Goals model file không tồn tại: {GOALS_MODEL_PATH}')
+        return None
+    
+    try:
+        with open(GOALS_MODEL_PATH, 'rb') as f:
+            model = pickle.load(f)
+        logger.info(f'Đã load goals model từ {GOALS_MODEL_PATH}')
+        return model
+    except Exception as e:
+        logger.error(f'Lỗi khi load goals model: {e}')
+        return None
+
+
+def load_scaler(scaler_path):
+    """Load scaler nếu có"""
+    if not os.path.exists(scaler_path):
+        return None
+
+
+def align_features(df: pd.DataFrame, feature_list_path: str) -> pd.DataFrame:
+    """Align columns of df to the saved feature list: order columns and add any missing with zeros."""
+    if not os.path.exists(feature_list_path):
+        return df
+    try:
+        with open(feature_list_path, 'rb') as f:
+            cols = pickle.load(f)
+        # Add missing columns as 0
+        for c in cols:
+            if c not in df.columns:
+                df[c] = 0.0
+        # Drop extra columns
+        df = df[[c for c in cols]]
+        return df
+    except Exception:
+        return df
+    try:
+        with open(scaler_path, 'rb') as f:
+            return pickle.load(f)
+    except:
         return None
 
 
@@ -231,6 +287,8 @@ def predict_match(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
     
     # Chuẩn bị features
     features_df = prepare_features(home_stats, away_stats, odds_data)
+    # Căn chỉnh cột theo training
+    features_df = align_features(features_df, MATCH_FEATURES_PATH)
     
     logger.info(f'DEBUG: Features prepared - shape: {features_df.shape}, columns: {len(features_df.columns)}')
     logger.info(f'DEBUG: First 10 columns: {list(features_df.columns[:10])}')
@@ -356,6 +414,202 @@ def generate_stats_summary(home_stats: Dict[str, Any], away_stats: Dict[str, Any
 """
     
     return summary.strip()
+
+
+def predict_total_goals(home_stats: Dict[str, Any], away_stats: Dict[str, Any], 
+                        odds_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """
+    Dự đoán tổng số bàn thắng của trận đấu
+    
+    Args:
+        home_stats: Thống kê đội nhà
+        away_stats: Thống kê đội khách
+        odds_data: Dữ liệu kèo (optional)
+    
+    Returns:
+        Dictionary chứa dự đoán tổng bàn và phân tích Over/Under
+    """
+    # Load model
+    goals_model = load_goals_model()
+    
+    if goals_model is None:
+        logger.warning('Goals model chưa được huấn luyện. Sử dụng dự đoán đơn giản.')
+        return predict_goals_without_model(home_stats, away_stats)
+    
+    # Chuẩn bị features (giống với predict_match)
+    features_df = prepare_features(home_stats, away_stats, odds_data)
+    # Align theo danh sách features của goals
+    features_df = align_features(features_df, GOALS_FEATURES_PATH)
+    logger.debug(f'Goals features prepared: {features_df.shape[1]} columns')
+    
+    try:
+        # Load scaler nếu có
+        scaler = load_scaler(GOALS_SCALER_PATH)
+        if scaler:
+            features_scaled = scaler.transform(features_df)
+        else:
+            features_scaled = features_df
+        
+        # Dự đoán
+        predicted_goals = goals_model.predict(features_scaled)[0]
+        
+        # Phân tích Over/Under 2.5
+        if predicted_goals > 2.75:
+            ou_recommendation = f"Over 2.5 bàn (Dự đoán: {predicted_goals:.1f} bàn)"
+            ou_confidence = min(0.75, 0.5 + (predicted_goals - 2.5) * 0.1)
+        elif predicted_goals < 2.25:
+            ou_recommendation = f"Under 2.5 bàn (Dự đoán: {predicted_goals:.1f} bàn)"
+            ou_confidence = min(0.75, 0.5 + (2.5 - predicted_goals) * 0.1)
+        else:
+            ou_recommendation = f"Khó dự đoán (Dự đoán: {predicted_goals:.1f} bàn - gần 2.5)"
+            ou_confidence = 0.5
+        
+        result = {
+            'predicted_goals': float(predicted_goals),
+            'over_under_recommendation': ou_recommendation,
+            'ou_confidence': float(ou_confidence),
+            'model_used': True
+        }
+        
+        logger.info(f'Dự đoán tổng bàn: {predicted_goals:.1f} - {ou_recommendation}')
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f'Lỗi khi dự đoán tổng bàn: {e}', exc_info=True)
+        return predict_goals_without_model(home_stats, away_stats)
+
+
+def predict_goals_without_model(home_stats: Dict[str, Any], away_stats: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Dự đoán tổng bàn đơn giản dựa trên trung bình goals
+    """
+    logger.info('Sử dụng phương pháp dự đoán tổng bàn đơn giản')
+    
+    # Tính trung bình goals
+    home_goals = home_stats.get('goals_scored_avg', 1.5)
+    away_goals = away_stats.get('goals_scored_avg', 1.2)
+    predicted_goals = home_goals + away_goals
+    
+    # Điều chỉnh dựa trên phòng ngự
+    home_conceded = home_stats.get('goals_conceded_avg', 1.0)
+    away_conceded = away_stats.get('goals_conceded_avg', 1.0)
+    avg_conceded = (home_conceded + away_conceded) / 2
+    
+    # Tính lại với cân nhắc phòng ngự
+    predicted_goals = (predicted_goals + avg_conceded) / 2
+    
+    # Over/Under 2.5
+    if predicted_goals > 2.75:
+        ou_recommendation = f"Over 2.5 bàn (Dự đoán: {predicted_goals:.1f} bàn)"
+        ou_confidence = min(0.70, 0.5 + (predicted_goals - 2.5) * 0.08)
+    elif predicted_goals < 2.25:
+        ou_recommendation = f"Under 2.5 bàn (Dự đoán: {predicted_goals:.1f} bàn)"
+        ou_confidence = min(0.70, 0.5 + (2.5 - predicted_goals) * 0.08)
+    else:
+        ou_recommendation = f"Khó dự đoán (Dự đoán: {predicted_goals:.1f} bàn - gần 2.5)"
+        ou_confidence = 0.5
+    
+    return {
+        'predicted_goals': float(predicted_goals),
+        'over_under_recommendation': ou_recommendation,
+        'ou_confidence': float(ou_confidence),
+        'model_used': False
+    }
+
+
+def predict_multiline_ou(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
+                         odds_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Dự đoán Over/Under cho nhiều mốc (1.5, 2.5, 3.5) dựa trên phân phối Poisson
+    
+    Returns:
+        Dict chứa xác suất Over/Under cho từng mốc
+    """
+    # Lấy lambda từ Poisson hoặc fallback
+    home_name = home_stats.get('team_name', 'Home')
+    away_name = away_stats.get('team_name', 'Away')
+    
+    try:
+        strengths, mu_home, mu_away = load_or_fit_strengths()
+        lam_h, lam_a = pois_expected_goals(home_name, away_name, strengths, mu_home, mu_away)
+    except Exception:
+        lam_h = max(0.2, 0.6 * home_stats.get('goals_scored_avg', 1.4) + 0.4 * away_stats.get('goals_conceded_avg', 1.2)) * 1.05
+        lam_a = max(0.2, 0.6 * away_stats.get('goals_scored_avg', 1.2) + 0.4 * home_stats.get('goals_conceded_avg', 1.0))
+    
+    # Điều chỉnh theo model regression nếu có
+    reg = predict_total_goals(home_stats, away_stats, odds_data)
+    if reg and 'predicted_goals' in reg:
+        total_target = max(0.1, float(reg['predicted_goals']))
+        total_current = lam_h + lam_a
+        if total_current > 0:
+            scale = total_target / total_current
+            lam_h *= scale
+            lam_a *= scale
+    
+    # Tính xác suất cho từng mốc
+    prob = score_matrix(lam_h, lam_a, max_goals=8)
+    
+    results = {}
+    for line in [1.5, 2.5, 3.5]:
+        over, under, push = pois_ou_probabilities(prob, line)
+        results[f'{line}'] = {
+            'line': line,
+            'over_prob': float(over),
+            'under_prob': float(under),
+            'push_prob': float(push),
+            'recommendation': 'Over' if over > under else 'Under',
+            'confidence': float(max(over, under))
+        }
+    
+    return results
+
+
+def predict_correct_score(home_stats: Dict[str, Any], away_stats: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Dự đoán tỉ số chính xác sử dụng mô hình Poisson, có hiệu chỉnh theo tổng bàn từ model regression nếu có.
+    Trả về top 5 tỉ số khả dĩ và xác suất O/U 2.5.
+    """
+    home_name = home_stats.get('team_name', 'Home')
+    away_name = away_stats.get('team_name', 'Away')
+
+    # 1) Poisson strengths from historical data
+    try:
+        strengths, mu_home, mu_away = load_or_fit_strengths()
+        lam_h, lam_a = pois_expected_goals(home_name, away_name, strengths, mu_home, mu_away)
+    except Exception:
+        # Fallback using recent stats
+        lam_h = max(0.2, 0.6 * home_stats.get('goals_scored_avg', 1.4) + 0.4 * away_stats.get('goals_conceded_avg', 1.2)) * 1.05
+        lam_a = max(0.2, 0.6 * away_stats.get('goals_scored_avg', 1.2) + 0.4 * home_stats.get('goals_conceded_avg', 1.0))
+
+    # 2) Align with regression total goals if available
+    reg = predict_total_goals(home_stats, away_stats)
+    if reg and 'predicted_goals' in reg:
+        total_target = max(0.1, float(reg['predicted_goals']))
+        total_current = lam_h + lam_a
+        if total_current > 0:
+            scale = total_target / total_current
+            lam_h *= scale
+            lam_a *= scale
+
+    # 3) Build probability matrix
+    prob = score_matrix(lam_h, lam_a, max_goals=6)
+    top5 = pois_top_scorelines(prob, n=5)
+    over, under, push = pois_ou_probabilities(prob, 2.5)
+
+    # Choose best correct score
+    best_score, best_prob = top5[0]
+
+    return {
+        'lambda_home': float(lam_h),
+        'lambda_away': float(lam_a),
+        'top_scorelines': top5,
+        'best_correct_score': best_score,
+        'best_correct_score_prob': float(best_prob),
+        'ou_over_prob_2_5': float(over),
+        'ou_under_prob_2_5': float(under),
+        'ou_push_prob_2_5': float(push)
+    }
 
 
 def main():

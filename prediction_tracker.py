@@ -25,7 +25,12 @@ def log_prediction(
     prediction: int,
     confidence: float,
     handicap_value: float = None,
-    odds_data: Dict[str, Any] = None
+    odds_data: Dict[str, Any] = None,
+    # Over/Under logging
+    ou_line: float | None = None,
+    ou_pick: str | None = None,  # 'Over' or 'Under'
+    ou_confidence: float | None = None,
+    predicted_goals: float | None = None,
 ) -> str:
     """
     Lưu lại một prediction
@@ -45,7 +50,14 @@ def log_prediction(
         'handicap_value': handicap_value,
         'odds_data': odds_data,
         'actual_result': None,  # Sẽ update sau khi trận đấu kết thúc
-        'correct': None
+        'correct': None,
+        # Over/Under fields
+        'ou_line': ou_line,
+        'ou_pick': ou_pick,
+        'ou_confidence': ou_confidence,
+        'predicted_goals': predicted_goals,
+        'ou_actual': None,
+        'ou_correct': None
     }
     
     # Load existing predictions
@@ -70,7 +82,7 @@ def update_result(
     prediction_id: str,
     home_goals: int,
     away_goals: int,
-    handicap_value: float
+    handicap_value: float,
 ) -> bool:
     """
     Cập nhật kết quả thực tế sau khi trận đấu kết thúc
@@ -96,6 +108,20 @@ def update_result(
             pred['home_goals'] = home_goals
             pred['away_goals'] = away_goals
             pred['correct'] = (pred['prediction'] == actual_result)
+
+            # Over/Under outcome if logged
+            if pred.get('ou_line') is not None and pred.get('ou_pick'):
+                total_goals = (home_goals or 0) + (away_goals or 0)
+                line = float(pred['ou_line'])
+                # Standard Asian O/U grading (push if exactly equals line when using whole/half)
+                if total_goals > line:
+                    ou_actual = 'Over'
+                elif total_goals < line:
+                    ou_actual = 'Under'
+                else:
+                    ou_actual = 'Push'
+                pred['ou_actual'] = ou_actual
+                pred['ou_correct'] = (ou_actual == pred['ou_pick']) if ou_actual != 'Push' else None
             
             # Save
             with open(PREDICTIONS_FILE, 'w', encoding='utf-8') as f:
@@ -157,6 +183,27 @@ def update_stats():
     logger.info(f"Stats updated: {correct}/{total} correct ({accuracy:.2%})")
     
     return stats
+
+
+def get_ou_accuracy(line: float) -> Dict[str, Any]:
+    """Compute accuracy for Over/Under predictions at a given line (e.g., 2.5)."""
+    if not os.path.exists(PREDICTIONS_FILE):
+        return {'count': 0, 'correct': 0, 'accuracy': 0.0}
+
+    with open(PREDICTIONS_FILE, 'r', encoding='utf-8') as f:
+        predictions = json.load(f)
+
+    filtered = [p for p in predictions if p.get('ou_line') == float(line) and p.get('ou_correct') is not None]
+    count = len(filtered)
+    correct = sum(1 for p in filtered if p['ou_correct'])
+    acc = correct / count if count else 0.0
+    return {'line': line, 'count': count, 'correct': correct, 'accuracy': acc}
+
+
+def get_ou_stats(lines: list[float] = [1.5, 2.5, 3.5]) -> Dict[str, Any]:
+    """Aggregate OU accuracy across common lines."""
+    out = {str(l): get_ou_accuracy(l) for l in lines}
+    return out
 
 
 def get_stats() -> Optional[Dict[str, Any]]:

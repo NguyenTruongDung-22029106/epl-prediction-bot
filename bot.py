@@ -22,9 +22,10 @@ from dotenv import load_dotenv
 import requests
 
 # Import các module tự tạo
-from predictor import predict_match
+from predictor import predict_match, predict_total_goals, predict_correct_score, predict_multiline_ou
 from data_collector import get_team_stats, get_odds_data
 from prediction_tracker import log_prediction, get_stats
+from ai_helper import generate_ai_insight
 
 # Load environment variables
 load_dotenv()
@@ -236,16 +237,43 @@ async def analyze(ctx: commands.Context, *, match_input: str):
         # Bước 3: Dự đoán bằng model
         prediction_result = predict_match(home_stats, away_stats, odds_data)
         
+        # Bước 3.5: Dự đoán tổng bàn thắng
+        goals_result = predict_total_goals(home_stats, away_stats, odds_data)
+        
+        # Bước 3.6: Dự đoán multi-line O/U (1.5, 2.5, 3.5)
+        multiline_ou = predict_multiline_ou(home_stats, away_stats, odds_data)
+
+        # Bước 3.7: Dự đoán tỉ số chính xác (Poisson)
+        correct_score = predict_correct_score(home_stats, away_stats)
+        
         # Log prediction for tracking
-        if prediction_result and odds_data:
+        if prediction_result:
             try:
+                # Parse OU pick if available
+                ou_line = 2.5
+                ou_pick = None
+                ou_conf = None
+                predicted_goals = None
+                if goals_result:
+                    predicted_goals = goals_result.get('predicted_goals')
+                    ou_text = goals_result.get('over_under_recommendation', '')
+                    ou_conf = goals_result.get('ou_confidence')
+                    if 'Over 2.5' in ou_text:
+                        ou_pick = 'Over'
+                    elif 'Under 2.5' in ou_text:
+                        ou_pick = 'Under'
+
                 log_prediction(
                     home_team=home_team,
                     away_team=away_team,
                     prediction=prediction_result['prediction'],
                     confidence=prediction_result['confidence'],
-                    handicap_value=odds_data.get('handicap_value', 0),
-                    odds_data=odds_data
+                    handicap_value=odds_data.get('handicap_value', 0) if odds_data else 0,
+                    odds_data=odds_data,
+                    ou_line=ou_line,
+                    ou_pick=ou_pick,
+                    ou_confidence=ou_conf,
+                    predicted_goals=predicted_goals,
                 )
             except Exception as e:
                 logger.warning(f'Could not log prediction: {e}')
@@ -297,6 +325,80 @@ async def analyze(ctx: commands.Context, *, match_input: str):
             inline=True
         )
         
+        # Dự đoán tổng bàn thắng với multi-line O/U
+        if goals_result:
+            predicted_goals = goals_result['predicted_goals']
+            ou_recommendation = goals_result['over_under_recommendation']
+            ou_confidence = goals_result['ou_confidence']
+        
+            # Icon theo độ tin cậy O/U
+            if ou_confidence >= 0.65:
+                ou_icon = '🟢'
+            elif ou_confidence >= 0.5:
+                ou_icon = '🟡'
+            else:
+                ou_icon = '🟠'
+        
+            result_embed.add_field(
+                name='⚽ Dự Đoán Tổng Bàn Thắng',
+                value=f"```{ou_recommendation}```",
+                inline=False
+            )
+        
+            result_embed.add_field(
+                name=f'{ou_icon} Độ Tin Cậy O/U 2.5',
+                value=f"```{ou_confidence:.1%}```",
+                inline=True
+            )
+            
+        # Bảng O/U đa mốc
+        if multiline_ou:
+            ou_table = "```\n"
+            ou_table += "Mốc  | Over    | Under   | Gợi ý\n"
+            ou_table += "-----+---------+---------+-------\n"
+            for line in ['1.5', '2.5', '3.5']:
+                data = multiline_ou.get(line, {})
+                over_p = data.get('over_prob', 0) * 100
+                under_p = data.get('under_prob', 0) * 100
+                rec = data.get('recommendation', '-')
+                ou_table += f"{line:4s} | {over_p:5.1f}% | {under_p:5.1f}% | {rec}\n"
+            ou_table += "```"
+            result_embed.add_field(
+                name='📊 Phân Tích O/U Đa Mốc',
+                value=ou_table,
+                inline=False
+            )
+
+            # Tỉ số chính xác (Poisson)
+            if correct_score:
+                best = correct_score['best_correct_score']
+                best_p = correct_score['best_correct_score_prob']
+                top_lines = "\n".join([f"{s}: {p*100:.1f}%" for s,p in correct_score['top_scorelines']])
+                result_embed.add_field(
+                    name='🎯 Dự Đoán Tỉ Số (Poisson)',
+                    value=f"```Gợi ý: {best} ({best_p*100:.1f}%)\nTop 5:\n{top_lines}```",
+                    inline=False
+                )
+
+            # AI narrative (optional)
+            try:
+                ai_text = generate_ai_insight(
+                    home_team, away_team,
+                    home_stats, away_stats,
+                    recommendation, confidence,
+                    ou_text=ou_recommendation if goals_result else None,
+                    ou_conf=ou_confidence if goals_result else None,
+                    correct_score=best if correct_score else None
+                )
+                if ai_text:
+                    result_embed.add_field(
+                        name='🧠 AI Phân Tích',
+                        value=ai_text[:1000],  # Discord field limit safety
+                        inline=False
+                    )
+            except Exception as e:
+                logger.debug(f'AI insight failed: {e}')
+        
         # Thêm thống kê nếu có
         if 'stats_summary' in prediction_result:
             stats = prediction_result['stats_summary']
@@ -321,6 +423,26 @@ async def analyze(ctx: commands.Context, *, match_input: str):
             description=f'Đã xảy ra lỗi khi phân tích: {str(e)}',
             color=discord.Color.red()
         ))
+
+
+@bot.command(name='stats_ou')
+async def stats_ou(ctx: commands.Context, line: float = 2.5):
+    """Hiển thị độ chính xác lịch sử cho kèo Over/Under ở line (mặc định 2.5)."""
+    from prediction_tracker import get_ou_accuracy, get_ou_stats
+    try:
+        acc = get_ou_accuracy(line)
+        all_lines = get_ou_stats([1.5, 2.5, 3.5])
+        embed = discord.Embed(
+            title='📊 Thống Kê O/U',
+            description=f'Độ chính xác dựa trên các trận đã hoàn thành',
+            color=discord.Color.teal()
+        )
+        embed.add_field(name=f'Line {line}', value=f"```Số kèo: {acc['count']}\nĐúng: {acc['correct']}\nAccuracy: {acc['accuracy']*100:.1f}%```", inline=False)
+        for k,v in all_lines.items():
+            embed.add_field(name=f'Line {k}', value=f"```{v['accuracy']*100:.1f}% ({v['correct']}/{v['count']})```", inline=True)
+        await ctx.send(embed=embed)
+    except Exception as e:
+        await ctx.send(f'Không thể lấy thống kê: {e}')
 
 
 @bot.command(name='help')

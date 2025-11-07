@@ -14,6 +14,8 @@ Bot Discord sử dụng Machine Learning để phân tích và đưa ra khuyến
 - Discord Bot Token
 - Football-Data.org API Key (miễn phí)
 - The Odds API Key (miễn phí, 500 requests/tháng)
+- (Tùy chọn) Google AI Studio API Key (`GOOGLE_API_KEY`) để tạo phân tích ngôn ngữ tự động
+- (Tùy chọn) API-Football RapidAPI Key (`RAPIDAPI_KEY`) nếu muốn dữ liệu trận đấu real-time thay cho Football-Data.org
 
 ## 🚀 Cài đặt
 
@@ -42,7 +44,7 @@ pip install -r requirements.txt
 Tạo file `.env` từ template và điền thông tin:
 
 ```bash
-cp .env .env
+copy .env.example .env   # Windows PowerShell
 ```
 
 Sau đó mở file `.env` và điền các API keys:
@@ -51,6 +53,9 @@ Sau đó mở file `.env` và điền các API keys:
 DISCORD_TOKEN=your_discord_bot_token_here
 FOOTBALL_DATA_API_KEY=your_football_data_api_key_here
 ODDS_API_KEY=your_odds_api_key_here
+GOOGLE_API_KEY=your_google_ai_studio_key_here
+RAPIDAPI_KEY=your_api_football_rapidapi_key_here
+API_FOOTBALL_HOST=api-football-v1.p.rapidapi.com
 ```
 
 #### Lấy API Keys:
@@ -67,6 +72,15 @@ ODDS_API_KEY=your_odds_api_key_here
 3. **The Odds API Key**:
    - Đăng ký tại [The Odds API](https://the-odds-api.com/)
    - Lấy API key miễn phí (500 requests/tháng)
+
+4. **Google AI Studio (Gemini) API Key - tùy chọn**:
+5. **API-Football RapidAPI Key - tùy chọn**:
+   - Đăng ký tại RapidAPI và subscribe [API-Football](https://rapidapi.com/api-sports/api/api-football/)
+   - Lấy key và thêm vào `RAPIDAPI_KEY`
+   - Cho phép lấy fixtures gần nhất của đội để tính goals/form (ưu tiên dùng trước Football-Data; nếu lỗi sẽ fallback)
+   - Truy cập [Google AI Studio](https://aistudio.google.com/) đăng ký và tạo API Key
+   - Thêm vào `.env` dưới tên `GOOGLE_API_KEY`
+   - Nếu không có key này bot vẫn chạy bình thường, chỉ bỏ qua phần "AI Phân Tích"
 
 ### 5. Thu thập dữ liệu và Training Model
 
@@ -125,6 +139,9 @@ Kết quả sẽ bao gồm:
 - Khuyến nghị của bot (chọn đội nào)
 - Độ tin cậy (xác suất từ model)
 - Thống kê chi tiết của hai đội
+- Dự đoán tổng số bàn (Over/Under line 2.5)
+- Dự đoán tỉ số chính xác (Poisson top 5)
+- (Nếu cấu hình `GOOGLE_API_KEY`) Phân tích ngôn ngữ tự động AI
 - Disclaimer về tính tham khảo
 
 #### `!help`
@@ -142,6 +159,8 @@ Discord/
 ├── data_collector.py           # Thu thập và xử lý dữ liệu
 ├── model_trainer.py            # Huấn luyện Machine Learning model
 ├── predictor.py                # Logic dự đoán
+├── poisson_model.py            # Mô hình Poisson cho tỉ số
+├── ai_helper.py                # Tích hợp Google AI Studio (tùy chọn)
 ├── requirements.txt            # Dependencies
 ├── .env                        # API keys (không commit)
 ├── .gitignore                 # Ignore sensitive files
@@ -151,6 +170,7 @@ Discord/
 ├── historical_odds.csv         # Dữ liệu kèo lịch sử (tự động tạo)
 ├── master_dataset.csv          # Dataset hoàn chỉnh (tự động tạo)
 └── epl_prediction_model.pkl    # Model đã training (tự động tạo)
+└── epl_goals_model.pkl         # Model dự đoán tổng bàn thắng (tự động tạo)
 ```
 
 ## 🔧 Deployment lên Render
