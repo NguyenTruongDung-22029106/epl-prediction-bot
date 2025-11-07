@@ -22,23 +22,58 @@ Bot Discord sử dụng Machine Learning để phân tích và đưa ra khuyến
 ### 1. Clone repository
 
 ```bash
-git clone <repository-url>
+ **📊 Thống kê chi tiết**: Hiển thị thống kê form, goals, và các chỉ số quan trọng
+ **📈 Multi-line Over/Under**: Xác suất cho các mốc 1.5, 2.5, 3.5 với bảng tỷ lệ
+ **🎯 Poisson Correct Score**: Dự đoán top 5 tỉ số khả dĩ và gợi ý tỉ số chính
+ **🧠 AI Insight (tuỳ chọn)**: Nếu có `GOOGLE_API_KEY`, bot tạo đoạn phân tích tự nhiên bằng Gemini
 cd Discord
 ```
 
 ### 2. Tạo virtual environment
 
+Khi chạy trên Render (web service):
+Build Command:
+```bash
+pip install -r requirements.txt
+```
+Start Command:
+```bash
+python bot.py
+```
+Health endpoints:
+```
+GET /health   -> {"status":"healthy"}
+GET /token    -> Thông tin kiểm tra token (masked)
+```
 ```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
+ Dự đoán tổng số bàn (Over/Under line 2.5 + bảng O/U đa mốc 1.5 / 2.5 / 3.5)
+ Dự đoán tỉ số chính xác (Poisson top 5 + tỉ số gợi ý)
 ```
 
 ### 3. Cài đặt dependencies
+└── poisson_model.py            # Logic Poisson cho tỉ số đúng
 
 ```bash
 pip install -r requirements.txt
 ```
 
+4. Cấu hình:
+    - Build Command:
+       ```bash
+       pip install -r requirements.txt
+       ```
+    - Start Command:
+       ```bash
+       python bot.py
+       ```
+5. Environment Variables bắt buộc / khuyến nghị:
+    - `DISCORD_TOKEN` (bắt buộc)
+    - `FOOTBALL_DATA_API_KEY` (khuyến nghị)
+    - `ODDS_API_KEY` (khuyến nghị để lấy odds thật + caching 3h)
+    - `GOOGLE_API_KEY` (tuỳ chọn AI insight)
+    - `RAPIDAPI_KEY` (tuỳ chọn API-Football, fallback nếu 403)
+6. Health check: đảm bảo `/health` trả về JSON
+7. Nếu log báo "Improper token has been passed" → regenerate Discord Bot Token và cập nhật lại.
 ### 4. Cấu hình API Keys
 
 Tạo file `.env` từ template và điền thông tin:
@@ -53,16 +88,13 @@ Sau đó mở file `.env` và điền các API keys:
 DISCORD_TOKEN=your_discord_bot_token_here
 FOOTBALL_DATA_API_KEY=your_football_data_api_key_here
 ODDS_API_KEY=your_odds_api_key_here
-GOOGLE_API_KEY=your_google_ai_studio_key_here
-RAPIDAPI_KEY=your_api_football_rapidapi_key_here
-API_FOOTBALL_HOST=api-football-v1.p.rapidapi.com
 ```
 
-#### Lấy API Keys:
-
-1. **Discord Bot Token**: 
    - Truy cập [Discord Developer Portal](https://discord.com/developers/applications)
    - Tạo New Application
+
+---
+_Last updated: Multi-line O/U, Poisson score prediction, AI insight, Render deployment notes._
    - Vào tab Bot và copy token
 
 2. **Football-Data.org API Key**:
