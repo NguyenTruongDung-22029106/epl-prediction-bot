@@ -259,6 +259,117 @@ def get_stats() -> Optional[Dict[str, Any]]:
     }
 
 
+def auto_fetch_results(api_key: str, days_back: int = 7) -> int:
+    """
+    Tự động fetch kết quả từ Football-Data API cho các predictions chưa có kết quả.
+    
+    Args:
+        api_key: Football-Data API key
+        days_back: Số ngày quay lại để tìm kết quả
+    
+    Returns:
+        Số lượng predictions đã cập nhật
+    """
+    import requests
+    from datetime import datetime, timedelta
+    
+    if not os.path.exists(PREDICTIONS_FILE):
+        logger.warning('No predictions file found')
+        return 0
+    
+    with open(PREDICTIONS_FILE, 'r', encoding='utf-8') as f:
+        predictions = json.load(f)
+    
+    # Get pending predictions
+    pending = [p for p in predictions if p.get('actual_result') is None]
+    
+    if not pending:
+        logger.info('No pending predictions to fetch')
+        return 0
+    
+    logger.info(f'Found {len(pending)} pending predictions')
+    
+    # Fetch recent matches from API
+    date_from = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
+    date_to = datetime.now().strftime('%Y-%m-%d')
+    
+    headers = {'X-Auth-Token': api_key}
+    url = 'https://api.football-data.org/v4/competitions/PL/matches'
+    params = {'dateFrom': date_from, 'dateTo': date_to, 'status': 'FINISHED'}
+    
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f'Failed to fetch results from API: {e}')
+        return 0
+    
+    matches = data.get('matches', [])
+    logger.info(f'Fetched {len(matches)} finished matches from API')
+    
+    updated_count = 0
+    
+    for pred in pending:
+        pred_home = pred['home_team'].lower().replace(' ', '').replace('fc', '').replace('_', '')
+        pred_away = pred['away_team'].lower().replace(' ', '').replace('fc', '').replace('_', '')
+        
+        # Try to find match in API results
+        for match in matches:
+            api_home = match['homeTeam']['name'].lower().replace(' ', '').replace('fc', '').replace('_', '')
+            api_away = match['awayTeam']['name'].lower().replace(' ', '').replace('fc', '').replace('_', '')
+            
+            # Fuzzy match (contains or is contained)
+            home_match = (pred_home in api_home or api_home in pred_home)
+            away_match = (pred_away in api_away or api_away in pred_away)
+            
+            if home_match and away_match:
+                score = match.get('score', {}).get('fullTime', {})
+                home_goals = score.get('home')
+                away_goals = score.get('away')
+                
+                if home_goals is not None and away_goals is not None:
+                    handicap = pred.get('handicap_value', 0.0) or 0.0
+                    
+                    # Update result
+                    home_adjusted = home_goals + handicap
+                    actual_result = 1 if home_adjusted > away_goals else 0
+                    
+                    pred['actual_result'] = actual_result
+                    pred['home_goals'] = home_goals
+                    pred['away_goals'] = away_goals
+                    pred['correct'] = (pred['prediction'] == actual_result)
+                    pred['api_match_id'] = match.get('id')
+                    
+                    # O/U result
+                    if pred.get('ou_line') is not None and pred.get('ou_pick'):
+                        total_goals = home_goals + away_goals
+                        line = float(pred['ou_line'])
+                        if total_goals > line:
+                            ou_actual = 'Over'
+                        elif total_goals < line:
+                            ou_actual = 'Under'
+                        else:
+                            ou_actual = 'Push'
+                        pred['ou_actual'] = ou_actual
+                        pred['ou_correct'] = (ou_actual == pred['ou_pick']) if ou_actual != 'Push' else None
+                    
+                    updated_count += 1
+                    logger.info(f"Auto-updated: {pred['home_team']} {home_goals}-{away_goals} {pred['away_team']} | {'Correct' if pred['correct'] else 'Wrong'}")
+                    break
+    
+    if updated_count > 0:
+        # Save updated predictions
+        with open(PREDICTIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(predictions, f, indent=2, ensure_ascii=False)
+        
+        # Update stats
+        update_stats()
+        logger.info(f'✅ Auto-fetched and updated {updated_count} results')
+    
+    return updated_count
+
+
 def print_report():
     """
     In báo cáo chi tiết về prediction accuracy

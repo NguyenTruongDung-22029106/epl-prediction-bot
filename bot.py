@@ -273,14 +273,15 @@ async def analyze(ctx: commands.Context, *, match_input: str):
         # Bước 3: Dự đoán bằng model
         prediction_result = predict_match(home_stats, away_stats, odds_data)
         
-        # Bước 3.5: Dự đoán tổng bàn thắng
+        # Bước 3.5: Dự đoán tổng bàn thắng (có cache sử dụng ở predictor)
         goals_result = predict_total_goals(home_stats, away_stats, odds_data)
+        cached_goals = goals_result.get('predicted_goals') if goals_result else None
         
         # Bước 3.6: Dự đoán multi-line O/U (1.5, 2.5, 3.5)
-        multiline_ou = predict_multiline_ou(home_stats, away_stats, odds_data)
+        multiline_ou = predict_multiline_ou(home_stats, away_stats, odds_data, predicted_goals=cached_goals)
 
         # Bước 3.7: Dự đoán tỉ số chính xác (Poisson)
-        correct_score = predict_correct_score(home_stats, away_stats)
+        correct_score = predict_correct_score(home_stats, away_stats, predicted_goals=cached_goals)
         
         # Log prediction for tracking
         if prediction_result:
@@ -349,15 +350,18 @@ async def analyze(ctx: commands.Context, *, match_input: str):
         else:
             confidence_icon = '🟠'
         
+        # Clamp confidence hiển thị để tránh overconfidence nếu model bias
+        display_conf = min(confidence, 0.92)
+        recommendation_display = recommendation + (" (mock odds)" if (odds_data and odds_data.get('source') == 'mock') else "")
         result_embed.add_field(
             name='💡 Khuyến Nghị',
-            value=f"```{recommendation}```",
+            value=f"```{recommendation_display}```",
             inline=False
         )
         
         result_embed.add_field(
             name=f'{confidence_icon} Độ Tin Cậy',
-            value=f"```{confidence:.1%}```",
+            value=f"```{display_conf:.1%}```",
             inline=True
         )
         
@@ -479,6 +483,311 @@ async def stats_ou(ctx: commands.Context, line: float = 2.5):
         await ctx.send(embed=embed)
     except Exception as e:
         await ctx.send(f'Không thể lấy thống kê: {e}')
+
+
+@bot.command(name='fetchresults')
+async def fetch_results_command(ctx: commands.Context, days: int = 7):
+    """
+    Tự động fetch kết quả từ API cho các predictions chưa có kết quả.
+    
+    Ví dụ: !fetchresults
+    Hoặc: !fetchresults 14  (fetch 14 ngày trước)
+    """
+    from prediction_tracker import auto_fetch_results
+    await ctx.typing()
+    
+    try:
+        if not FOOTBALL_DATA_API_KEY:
+            await ctx.send('❌ Chưa cấu hình FOOTBALL_DATA_API_KEY.')
+            return
+        
+        loading_embed = discord.Embed(
+            title='🔄 Đang fetch kết quả...',
+            description=f'Đang tìm kết quả từ {days} ngày trước',
+            color=discord.Color.blue()
+        )
+        loading_msg = await ctx.send(embed=loading_embed)
+        
+        updated_count = auto_fetch_results(FOOTBALL_DATA_API_KEY, days_back=days)
+        
+        if updated_count > 0:
+            embed = discord.Embed(
+                title='✅ Fetch Thành Công',
+                description=f'Đã cập nhật **{updated_count}** kết quả từ API',
+                color=discord.Color.green()
+            )
+            
+            # Get updated stats
+            from prediction_tracker import get_stats
+            stats = get_stats()
+            if stats and stats.get('completed_predictions', 0) > 0:
+                embed.add_field(
+                    name='Độ chính xác hiện tại',
+                    value=f"{stats['accuracy']:.1%} ({stats['correct_predictions']}/{stats['completed_predictions']})",
+                    inline=False
+                )
+        else:
+            embed = discord.Embed(
+                title='ℹ️ Không có cập nhật',
+                description='Không tìm thấy kết quả mới hoặc tất cả predictions đã được cập nhật.',
+                color=discord.Color.blue()
+            )
+        
+        await loading_msg.edit(embed=embed)
+        
+    except Exception as e:
+        logger.error(f'Error fetching results: {e}', exc_info=True)
+        await ctx.send(f'❌ Lỗi khi fetch: {str(e)}')
+
+
+@bot.command(name='analyze')
+async def analyze_command(ctx: commands.Context):
+    """
+    Hiển thị báo cáo phân tích prediction accuracy và bias.
+    """
+    import json
+    await ctx.typing()
+    
+    try:
+        if not os.path.exists('predictions_log.json'):
+            await ctx.send('❌ Chưa có prediction nào được lưu.')
+            return
+        
+        with open('predictions_log.json', 'r', encoding='utf-8') as f:
+            predictions = json.load(f)
+        
+        completed = [p for p in predictions if p.get('actual_result') is not None]
+        
+        if not completed:
+            await ctx.send('⚠️ Chưa có trận nào hoàn thành. Dùng `!fetchresults` để tự động cập nhật kết quả.')
+            return
+        
+        # Main stats embed
+        total = len(completed)
+        correct = sum(1 for p in completed if p.get('correct'))
+        accuracy = correct / total
+        
+        embed = discord.Embed(
+            title='📊 Báo Cáo Phân Tích Predictions',
+            description=f'Phân tích {len(predictions)} predictions ({total} đã hoàn thành)',
+            color=discord.Color.gold()
+        )
+        
+        # Overall accuracy
+        acc_icon = '🟢' if accuracy >= 0.65 else ('🟡' if accuracy >= 0.55 else '🔴')
+        embed.add_field(
+            name=f'{acc_icon} Độ Chính Xác Tổng Thể',
+            value=f'**{accuracy:.1%}** ({correct}/{total} đúng)',
+            inline=False
+        )
+        
+        # By confidence level
+        high_conf = [p for p in completed if p.get('confidence', 0) >= 0.7]
+        med_conf = [p for p in completed if 0.55 <= p.get('confidence', 0) < 0.7]
+        
+        conf_text = []
+        if high_conf:
+            high_acc = sum(1 for p in high_conf if p.get('correct')) / len(high_conf)
+            conf_text.append(f"Cao (≥70%): {high_acc:.1%} ({len(high_conf)} trận)")
+        if med_conf:
+            med_acc = sum(1 for p in med_conf if p.get('correct')) / len(med_conf)
+            conf_text.append(f"Trung (55-70%): {med_acc:.1%} ({len(med_conf)} trận)")
+        
+        if conf_text:
+            embed.add_field(
+                name='📈 Theo Độ Tin Cậy',
+                value='\n'.join(conf_text),
+                inline=True
+            )
+        
+        # O/U Analysis
+        ou_completed = [p for p in completed if p.get('ou_pick') and p.get('ou_actual') and p.get('ou_actual') != 'Push']
+        
+        if ou_completed:
+            ou_correct = sum(1 for p in ou_completed if p.get('ou_correct'))
+            ou_accuracy = ou_correct / len(ou_completed)
+            
+            over_picks = sum(1 for p in ou_completed if p.get('ou_pick') == 'Over')
+            over_ratio = over_picks / len(ou_completed)
+            
+            ou_text = [f"Accuracy: **{ou_accuracy:.1%}** ({ou_correct}/{len(ou_completed)})"]
+            
+            # Bias detection
+            if over_ratio > 0.65:
+                ou_text.append(f"⚠️ Over Bias: {over_ratio:.1%} picks là Over")
+            elif over_ratio < 0.35:
+                ou_text.append(f"⚠️ Under Bias: {(1-over_ratio):.1%} picks là Under")
+            else:
+                ou_text.append(f"✅ Cân bằng: {over_ratio:.1%} Over / {(1-over_ratio):.1%} Under")
+            
+            # Win rate by pick
+            over_preds = [p for p in ou_completed if p.get('ou_pick') == 'Over']
+            under_preds = [p for p in ou_completed if p.get('ou_pick') == 'Under']
+            
+            if over_preds:
+                over_wr = sum(1 for p in over_preds if p.get('ou_correct')) / len(over_preds)
+                ou_text.append(f"Over WR: {over_wr:.1%}")
+            if under_preds:
+                under_wr = sum(1 for p in under_preds if p.get('ou_correct')) / len(under_preds)
+                ou_text.append(f"Under WR: {under_wr:.1%}")
+            
+            embed.add_field(
+                name='🎯 Over/Under Analysis',
+                value='\n'.join(ou_text),
+                inline=True
+            )
+        
+        # Goals prediction accuracy
+        goals_completed = [p for p in completed 
+                          if p.get('predicted_goals') is not None 
+                          and p.get('home_goals') is not None]
+        
+        if goals_completed:
+            errors = []
+            for p in goals_completed:
+                predicted = p.get('predicted_goals', 0)
+                actual = (p.get('home_goals', 0) or 0) + (p.get('away_goals', 0) or 0)
+                errors.append(abs(predicted - actual))
+            
+            mae = sum(errors) / len(errors)
+            embed.add_field(
+                name='⚽ Dự Đoán Tổng Bàn',
+                value=f'MAE: **{mae:.2f}** bàn/trận\n({len(goals_completed)} trận)',
+                inline=True
+            )
+        
+        # Recent results (last 5)
+        recent = completed[-5:] if len(completed) > 5 else completed
+        recent_text = []
+        for p in reversed(recent):
+            icon = '✅' if p.get('correct') else '❌'
+            score = f"{p.get('home_goals', '?')}-{p.get('away_goals', '?')}"
+            recent_text.append(f"{icon} {p['home_team'][:15]} vs {p['away_team'][:15]} ({score})")
+        
+        if recent_text:
+            embed.add_field(
+                name='📝 5 Trận Gần Nhất',
+                value='\n'.join(recent_text),
+                inline=False
+            )
+        
+        # Footer with tips
+        tips = []
+        if len(completed) < 20:
+            tips.append('💡 Cần thêm dữ liệu (ít nhất 20 trận) để phân tích chi tiết.')
+        
+        if ou_completed and over_ratio > 0.65:
+            over_preds_list = [p for p in ou_completed if p.get('ou_pick') == 'Over']
+            if over_preds_list:
+                over_wr_check = sum(1 for p in over_preds_list if p.get('ou_correct')) / len(over_preds_list)
+                if over_wr_check < 0.5:
+                    tips.append('⚠️ Model nghiêng Over nhưng win rate thấp. Cân nhắc hạ alpha.')
+        
+        if tips:
+            embed.set_footer(text=' | '.join(tips))
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f'Error in analyze command: {e}', exc_info=True)
+        await ctx.send(f'❌ Lỗi khi phân tích: {str(e)}')
+
+
+@bot.command(name='updateresult')
+async def update_result_command(ctx: commands.Context, home_team: str, away_team: str, home_goals: int, away_goals: int):
+    """
+    Cập nhật kết quả trận đấu để tính accuracy.
+    
+    Ví dụ: !updateresult Arsenal "Manchester United" 2 1
+    Hoặc: !updateresult Arsenal ManchesterUnited 2 1
+    """
+    from prediction_tracker import update_result
+    import json
+    await ctx.typing()
+    
+    try:
+        # Load predictions
+        if not os.path.exists('predictions_log.json'):
+            await ctx.send('❌ Chưa có prediction nào được lưu.')
+            return
+        
+        with open('predictions_log.json', 'r', encoding='utf-8') as f:
+            predictions = json.load(f)
+        
+        # Find matching prediction (most recent)
+        # Normalize team names for matching
+        home_norm = home_team.lower().replace(' ', '').replace('_', '')
+        away_norm = away_team.lower().replace(' ', '').replace('_', '')
+        
+        candidates = []
+        for p in predictions:
+            p_home = p['home_team'].lower().replace(' ', '').replace('_', '')
+            p_away = p['away_team'].lower().replace(' ', '').replace('_', '')
+            if p_home == home_norm and p_away == away_norm and p.get('actual_result') is None:
+                candidates.append(p)
+        
+        if not candidates:
+            await ctx.send(f'❌ Không tìm thấy prediction cho trận **{home_team}** vs **{away_team}** (hoặc đã cập nhật rồi).')
+            return
+        
+        # Get most recent
+        pred = candidates[-1]
+        pred_id = pred['id']
+        handicap = pred.get('handicap_value', 0.0) or 0.0
+        
+        # Update
+        is_correct = update_result(pred_id, home_goals, away_goals, handicap)
+        
+        # Build response
+        embed = discord.Embed(
+            title='✅ Đã Cập Nhật Kết Quả',
+            description=f'**{home_team}** {home_goals}-{away_goals} **{away_team}**',
+            color=discord.Color.green() if is_correct else discord.Color.red()
+        )
+        
+        embed.add_field(
+            name='Kèo chấp',
+            value=f'{pred["home_team"]} {handicap:+.1f}',
+            inline=True
+        )
+        
+        embed.add_field(
+            name='Dự đoán',
+            value=f'{"Nhà" if pred["prediction"] == 1 else "Khách"} thắng kèo',
+            inline=True
+        )
+        
+        embed.add_field(
+            name='Kết quả',
+            value=f'{"✅ Đúng" if is_correct else "❌ Sai"}',
+            inline=True
+        )
+        
+        # O/U result if logged
+        if pred.get('ou_pick') and pred.get('ou_actual'):
+            total = home_goals + away_goals
+            ou_correct = pred.get('ou_correct')
+            embed.add_field(
+                name=f'O/U {pred.get("ou_line", 2.5)}',
+                value=f'Dự đoán: {pred["ou_pick"]}\nThực tế: {pred["ou_actual"]} ({total} bàn)\n{"✅ Đúng" if ou_correct else ("❌ Sai" if ou_correct is False else "🟡 Push")}',
+                inline=False
+            )
+        
+        # Get updated stats
+        from prediction_tracker import get_stats
+        stats = get_stats()
+        if stats and stats.get('completed_predictions', 0) > 0:
+            embed.add_field(
+                name='Độ chính xác hiện tại',
+                value=f"{stats['accuracy']:.1%} ({stats['correct_predictions']}/{stats['completed_predictions']})",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f'Error updating result: {e}', exc_info=True)
+        await ctx.send(f'❌ Lỗi khi cập nhật: {str(e)}')
 
 
 @bot.command(name='help')

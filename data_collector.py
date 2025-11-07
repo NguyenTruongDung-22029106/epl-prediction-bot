@@ -484,6 +484,39 @@ _odds_cache = {}
 _ODDS_CACHE_TTL = 3 * 3600  # 3 hours in seconds
 
 
+def _normalize_team_name(name: str) -> str:
+    """Chuẩn hoá tên đội để tìm kiếm API và map alias phổ biến."""
+    if not name:
+        return name
+    n = name.strip().lower()
+    aliases = {
+        'fullham': 'fulham',
+        'man u': 'manchester united', 'man utd': 'manchester united',
+        'man city': 'manchester city',
+        'spurs': 'tottenham hotspur', 'tottenham': 'tottenham hotspur',
+        'wolves': 'wolverhampton wanderers', 'wolverhampton': 'wolverhampton wanderers',
+        'nottm forest': 'nottingham forest', "nott'm forest": 'nottingham forest',
+        'west ham': 'west ham united',
+    }
+    n = aliases.get(n, n)
+    return n.title() if ' ' in n else n.capitalize()
+
+
+def _format_handicap(value: float) -> str:
+    """Format handicap giữ quarter lines (0.25/0.75) thay vì làm tròn 1 chữ số.
+    Trả về chuỗi có dấu +/-, tối đa 2 chữ số thập phân và bỏ số 0 dư thừa.
+    """
+    from decimal import Decimal, ROUND_HALF_UP
+    q = (Decimal(str(value)).quantize(Decimal('0.25'), rounding=ROUND_HALF_UP))
+    s = f"{q:+.2f}"
+    # Trim trailing zeros
+    if s.endswith('00'):
+        s = s[:-3]
+    elif s.endswith('0'):
+        s = s[:-1]
+    return s
+
+
 def get_odds_data(home_team: str, away_team: str, api_key: str = None) -> Optional[Dict[str, Any]]:
     """
     Lấy dữ liệu kèo cược từ The Odds API với caching 3 giờ
@@ -496,10 +529,13 @@ def get_odds_data(home_team: str, away_team: str, api_key: str = None) -> Option
     Returns:
         Dictionary chứa thông tin kèo hoặc None nếu có lỗi
     """
-    logger.info(f'Đang lấy kèo cho trận: {home_team} vs {away_team}')
+    # Normalize tên đội để tăng tỷ lệ match
+    home_team_norm = _normalize_team_name(home_team)
+    away_team_norm = _normalize_team_name(away_team)
+    logger.info(f'Đang lấy kèo cho trận: {home_team_norm} vs {away_team_norm}')
     
     # Check cache first
-    cache_key = f"{home_team}_vs_{away_team}".lower().replace(' ', '_')
+    cache_key = f"{home_team_norm}_vs_{away_team_norm}".lower().replace(' ', '_')
     now = time.time()
     if cache_key in _odds_cache:
         cached_data, cached_time = _odds_cache[cache_key]
@@ -511,7 +547,7 @@ def get_odds_data(home_team: str, away_team: str, api_key: str = None) -> Option
     key = api_key or ODDS_API_KEY
     if key:
         try:
-            real_odds = _fetch_real_odds(home_team, away_team, key)
+            real_odds = _fetch_real_odds(home_team_norm, away_team_norm, key)
             if real_odds:
                 _odds_cache[cache_key] = (real_odds, now)
                 return real_odds
@@ -521,9 +557,9 @@ def get_odds_data(home_team: str, away_team: str, api_key: str = None) -> Option
     # Fallback to mock
     logger.info('Sử dụng mock odds (API key không có hoặc lỗi)')
     mock_odds = {
-        'home_team': home_team,
-        'away_team': away_team,
-        'asian_handicap': f'{home_team} -0.5',
+        'home_team': home_team_norm,
+        'away_team': away_team_norm,
+        'asian_handicap': f'{home_team_norm} -0.5',
         'handicap_value': -0.5,
         'home_odds': 1.95,
         'away_odds': 1.95,
@@ -570,11 +606,11 @@ def _fetch_real_odds(home_team: str, away_team: str, api_key: str) -> Optional[D
                         away_outcome = next((o for o in outcomes if o['name'] == event['away_team']), None)
                         
                         if home_outcome and away_outcome:
-                            handicap = home_outcome.get('point', 0)
+                            handicap = float(home_outcome.get('point', 0))
                             return {
                                 'home_team': event['home_team'],
                                 'away_team': event['away_team'],
-                                'asian_handicap': f"{event['home_team']} {handicap:+.1f}",
+                                'asian_handicap': f"{event['home_team']} {_format_handicap(handicap)}",
                                 'handicap_value': float(handicap),
                                 'home_odds': float(home_outcome.get('price', 1.95)),
                                 'away_odds': float(away_outcome.get('price', 1.95)),

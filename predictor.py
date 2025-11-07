@@ -11,6 +11,7 @@ import os
 import logging
 from typing import Dict, Any, Optional
 import pickle
+from datetime import datetime
 
 import pandas as pd
 import numpy as np
@@ -26,6 +27,7 @@ GOALS_MODEL_PATH = 'epl_goals_model.pkl'
 GOALS_SCALER_PATH = 'goals_scaler.pkl'
 MATCH_FEATURES_PATH = 'match_features.pkl'
 GOALS_FEATURES_PATH = 'goals_features.pkl'
+GOALS_CALIBRATION_PATH = 'goals_calibration.pkl'
 
 
 def load_model():
@@ -71,8 +73,15 @@ def load_goals_model():
 
 
 def load_scaler(scaler_path):
-    """Load scaler nếu có"""
+    """Load scaler nếu có (đúng logic, trước đây hàm luôn trả None)."""
     if not os.path.exists(scaler_path):
+        return None
+    try:
+        with open(scaler_path, 'rb') as f:
+            scaler = pickle.load(f)
+        return scaler
+    except Exception as e:
+        logger.warning(f'Không thể load scaler {scaler_path}: {e}')
         return None
 
 
@@ -99,7 +108,9 @@ def align_features(df: pd.DataFrame, feature_list_path: str) -> pd.DataFrame:
         return None
 
 
-def prepare_features(home_stats: Dict[str, Any], away_stats: Dict[str, Any], 
+_GOALS_CACHE: Dict[str, Dict[str, Any]] = {}
+
+def prepare_features(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
                      odds_data: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     """
     Chuẩn bị features từ dữ liệu thống kê và kèo - PHẢI KHỚP VỚI 105 FEATURES TRONG TRAINING DATA
@@ -197,10 +208,14 @@ def prepare_features(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
     features['Avg>2.5'] = over_odd
     features['Avg<2.5'] = under_odd
     
-    # === ASIAN HANDICAP ===
+    # === ASIAN HANDICAP (quarter line rounding 0.25) ===
+    def _round_quarter(x: float) -> float:
+        return round(x * 4) / 4
     goal_diff = home_stats.get('goals_scored_avg', 1.5) - away_stats.get('goals_scored_avg', 1.2)
-    handicap = round(goal_diff * 2) / 2  # Round to nearest 0.5
-    
+    raw_handicap = goal_diff * 0.6  # scale difference (tránh quá lớn)
+    handicap = _round_quarter(raw_handicap)
+    if handicap == -0.0:
+        handicap = 0.0
     features['AHh'] = handicap if odds_data is None else odds_data.get('handicap_value', handicap)
     features['B365AHH'] = 1.95  # Home team with handicap
     features['B365AHA'] = 1.95  # Away team with handicap
@@ -416,7 +431,7 @@ def generate_stats_summary(home_stats: Dict[str, Any], away_stats: Dict[str, Any
     return summary.strip()
 
 
-def predict_total_goals(home_stats: Dict[str, Any], away_stats: Dict[str, Any], 
+def predict_total_goals(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
                         odds_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """
     Dự đoán tổng số bàn thắng của trận đấu
@@ -445,13 +460,53 @@ def predict_total_goals(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
     try:
         # Load scaler nếu có
         scaler = load_scaler(GOALS_SCALER_PATH)
-        if scaler:
-            features_scaled = scaler.transform(features_df)
+        if scaler is not None:
+            scaled_array = scaler.transform(features_df)
+            # Re-wrap to DataFrame to preserve feature names and avoid downstream warnings
+            features_scaled = pd.DataFrame(scaled_array, columns=features_df.columns, index=features_df.index)
         else:
             features_scaled = features_df
         
         # Dự đoán
-        predicted_goals = goals_model.predict(features_scaled)[0]
+        # Ensure model sees a DataFrame with named columns to avoid feature name warnings
+        if isinstance(features_scaled, np.ndarray):
+            features_for_model = pd.DataFrame(features_scaled, columns=list(features_df.columns))
+        else:
+            features_for_model = features_scaled
+        raw_pred = float(goals_model.predict(features_for_model)[0])
+
+        # --- Calibration towards league mean ---
+        # Load calibration file if available to use dataset mean
+        league_mean = 2.7
+        calib_used = False
+        shrink_factor = None
+        try:
+            if os.path.exists(GOALS_CALIBRATION_PATH):
+                with open(GOALS_CALIBRATION_PATH, 'rb') as f:
+                    calib = pickle.load(f)
+                league_mean = float(calib.get('league_mean', league_mean))
+                shrink_factor = float(calib.get('shrink_factor')) if 'shrink_factor' in calib else None
+                calib_used = True
+        except Exception as _:
+            pass
+
+        # Lower alpha to reduce Over bias as requested
+        alpha = 0.50  # weight on model prediction (balanced towards league mean)
+        calibrated = alpha * raw_pred + (1 - alpha) * league_mean
+        # Defensive dampening: if both teams concede relatively low, reduce a bit
+        h_conc = home_stats.get('goals_conceded_avg', 1.2)
+        a_conc = away_stats.get('goals_conceded_avg', 1.2)
+        if h_conc < 1.2 and a_conc < 1.2:
+            calibrated *= 0.92
+        # Clamp to a plausible band
+        calibrated = max(1.5, min(3.6, calibrated))
+        predicted_goals = calibrated
+        # Cache theo cặp đội để tránh tính lại
+        match_key = f"{home_stats.get('team_name','home')}__{away_stats.get('team_name','away')}".lower()
+        _GOALS_CACHE[match_key] = {
+            'predicted_goals': float(predicted_goals),
+            'timestamp': datetime.now().timestamp()
+        }
         
         # Phân tích Over/Under 2.5
         if predicted_goals > 2.75:
@@ -468,7 +523,14 @@ def predict_total_goals(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
             'predicted_goals': float(predicted_goals),
             'over_under_recommendation': ou_recommendation,
             'ou_confidence': float(ou_confidence),
-            'model_used': True
+            'model_used': True,
+            'calibration': {
+                'raw_prediction': raw_pred,
+                'league_mean': league_mean,
+                'alpha': alpha,
+                'used_calibration_file': calib_used,
+                'shrink_factor': shrink_factor
+            }
         }
         
         logger.info(f'Dự đoán tổng bàn: {predicted_goals:.1f} - {ou_recommendation}')
@@ -519,7 +581,8 @@ def predict_goals_without_model(home_stats: Dict[str, Any], away_stats: Dict[str
 
 
 def predict_multiline_ou(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
-                         odds_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                         odds_data: Optional[Dict[str, Any]] = None,
+                         predicted_goals: Optional[float] = None) -> Dict[str, Any]:
     """
     Dự đoán Over/Under cho nhiều mốc (1.5, 2.5, 3.5) dựa trên phân phối Poisson
     
@@ -538,9 +601,17 @@ def predict_multiline_ou(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
         lam_a = max(0.2, 0.6 * away_stats.get('goals_scored_avg', 1.2) + 0.4 * home_stats.get('goals_conceded_avg', 1.0))
     
     # Điều chỉnh theo model regression nếu có
-    reg = predict_total_goals(home_stats, away_stats, odds_data)
-    if reg and 'predicted_goals' in reg:
-        total_target = max(0.1, float(reg['predicted_goals']))
+    if predicted_goals is None:
+        # check cache to avoid duplicate model inference
+        match_key = f"{home_stats.get('team_name','home')}__{away_stats.get('team_name','away')}".lower()
+        if match_key in _GOALS_CACHE:
+            predicted_goals = _GOALS_CACHE[match_key]['predicted_goals']
+        else:
+            reg = predict_total_goals(home_stats, away_stats, odds_data)
+            predicted_goals = reg.get('predicted_goals') if reg else None
+
+    if predicted_goals is not None:
+        total_target = max(0.1, float(predicted_goals))
         total_current = lam_h + lam_a
         if total_current > 0:
             scale = total_target / total_current
@@ -565,7 +636,8 @@ def predict_multiline_ou(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
     return results
 
 
-def predict_correct_score(home_stats: Dict[str, Any], away_stats: Dict[str, Any]) -> Dict[str, Any]:
+def predict_correct_score(home_stats: Dict[str, Any], away_stats: Dict[str, Any],
+                          predicted_goals: Optional[float] = None) -> Dict[str, Any]:
     """
     Dự đoán tỉ số chính xác sử dụng mô hình Poisson, có hiệu chỉnh theo tổng bàn từ model regression nếu có.
     Trả về top 5 tỉ số khả dĩ và xác suất O/U 2.5.
@@ -583,9 +655,16 @@ def predict_correct_score(home_stats: Dict[str, Any], away_stats: Dict[str, Any]
         lam_a = max(0.2, 0.6 * away_stats.get('goals_scored_avg', 1.2) + 0.4 * home_stats.get('goals_conceded_avg', 1.0))
 
     # 2) Align with regression total goals if available
-    reg = predict_total_goals(home_stats, away_stats)
-    if reg and 'predicted_goals' in reg:
-        total_target = max(0.1, float(reg['predicted_goals']))
+    if predicted_goals is None:
+        match_key = f"{home_name}__{away_name}".lower()
+        if match_key in _GOALS_CACHE:
+            predicted_goals = _GOALS_CACHE[match_key]['predicted_goals']
+        else:
+            reg = predict_total_goals(home_stats, away_stats)
+            predicted_goals = reg.get('predicted_goals') if reg else None
+
+    if predicted_goals is not None:
+        total_target = max(0.1, float(predicted_goals))
         total_current = lam_h + lam_a
         if total_current > 0:
             scale = total_target / total_current
