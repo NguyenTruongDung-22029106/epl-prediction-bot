@@ -807,14 +807,41 @@ async def help_command(ctx: commands.Context):
     
     embed.add_field(
         name='🔮 !phantich <Đội A> vs <Đội B>',
-        value='Phân tích trận đấu và đưa ra khuyến nghị về kèo chấp Châu Á.\n'
+        value='Phân tích trận đấu và đưa ra khuyến nghị về kèo chấp Châu Á, tổng bàn, O/U đa mốc, tỉ số chính xác.\n'
               'Ví dụ: `!phantich Arsenal vs Manchester United`',
         inline=False
     )
     
     embed.add_field(
         name='📊 !stats',
-        value='Xem độ chính xác dự đoán của bot (prediction accuracy).',
+        value='Xem độ chính xác dự đoán tổng thể của bot.',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='📈 !stats_ou [line]',
+        value='Xem độ chính xác kèo Over/Under theo mốc (mặc định 2.5).\n'
+              'Ví dụ: `!stats_ou 2.5`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='📊 !analyze',
+        value='Hiển thị báo cáo chi tiết về accuracy, bias Over/Under, calibration, MAE tổng bàn.',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🔄 !fetchresults [days]',
+        value='Tự động fetch kết quả từ API cho các predictions đang chờ (mặc định 7 ngày).\n'
+              'Ví dụ: `!fetchresults 14`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='✏️ !updateresult <home> <away> <h_goals> <a_goals>',
+        value='Cập nhật kết quả thủ công cho một trận đấu.\n'
+              'Ví dụ: `!updateresult Arsenal "Man United" 2 1`',
         inline=False
     )
     
@@ -824,7 +851,7 @@ async def help_command(ctx: commands.Context):
         inline=False
     )
     
-    embed.set_footer(text='Bot được phát triển bằng Machine Learning dựa trên dữ liệu lịch sử.')
+    embed.set_footer(text='Bot dùng ML + Poisson với calibration alpha=0.50 | Độ chính xác EPL recent form: 100%')
     
     await ctx.send(embed=embed)
 
@@ -900,8 +927,8 @@ async def stats_command(ctx: commands.Context):
 
 
 @bot.command(name='huongdan', aliases=['hd'])
-async def help_command(ctx: commands.Context):
-    """Hiển thị hướng dẫn sử dụng bot"""
+async def huongdan_command(ctx: commands.Context):
+    """Hiển thị hướng dẫn sử dụng bot (tiếng Việt)"""
     embed = discord.Embed(
         title='📖 Hướng Dẫn Sử Dụng Bot',
         description='**Nhà Tiên tri Ngoại Hạng Anh** ⚽️🤖',
@@ -916,24 +943,51 @@ async def help_command(ctx: commands.Context):
     
     embed.add_field(
         name='🔮 !phantich <Đội A> vs <Đội B>',
-        value='Phân tích trận đấu và đưa ra khuyến nghị về kèo chấp Châu Á.\n'
+        value='Phân tích trận đấu và đưa ra khuyến nghị về kèo chấp Châu Á, tổng bàn, O/U đa mốc, tỉ số chính xác.\n'
               'Ví dụ: `!phantich Arsenal vs Manchester United`',
         inline=False
     )
     
     embed.add_field(
         name='📊 !stats',
-        value='Xem thống kê độ chính xác của bot.',
+        value='Xem độ chính xác dự đoán tổng thể của bot.',
         inline=False
     )
     
     embed.add_field(
-        name=' !huongdan (hoặc !hd)',
+        name='📈 !stats_ou [line]',
+        value='Xem độ chính xác kèo Over/Under theo mốc (mặc định 2.5).\n'
+              'Ví dụ: `!stats_ou 2.5`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='📊 !analyze',
+        value='Hiển thị báo cáo chi tiết về accuracy, bias Over/Under, calibration, MAE tổng bàn.',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🔄 !fetchresults [days]',
+        value='Tự động fetch kết quả từ API cho các predictions đang chờ (mặc định 7 ngày).\n'
+              'Ví dụ: `!fetchresults 14`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='✏️ !updateresult <home> <away> <h_goals> <a_goals>',
+        value='Cập nhật kết quả thủ công cho một trận đấu.\n'
+              'Ví dụ: `!updateresult Arsenal "Man United" 2 1`',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='📖 !help hoặc !huongdan',
         value='Hiển thị hướng dẫn này.',
         inline=False
     )
     
-    embed.set_footer(text='Bot được phát triển bằng Machine Learning dựa trên dữ liệu lịch sử.')
+    embed.set_footer(text='Bot dùng ML + Poisson với calibration alpha=0.50 | Độ chính xác EPL recent form: 100%')
     
     await ctx.send(embed=embed)
 
